@@ -127,7 +127,7 @@ void Battery::send_test_message() {
         fr.data[0] = 0x7E;
         fr.data[1] = 0x57;
         fr.data[2] = p;
-        ACAN_ESP32::can.tryToSend(fr);
+        packs[p].send_frame(&fr, false);
     }
 }
 

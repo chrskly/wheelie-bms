@@ -20,7 +20,6 @@
 #ifndef BMS_SRC_INCLUDE_PACK_H_
 #define BMS_SRC_INCLUDE_PACK_H_
 
-#include <ACAN_ESP32.h>
 #include <ACAN2515.h>
 
 #include "module.h"
@@ -94,9 +93,7 @@ class BatteryPack {
       uint16_t get_can_rx_error_count() { return canRxErrorCount; }
 
    private:
-      //MCP2515* CAN;                                     // CAN bus connection to this pack
-      ACAN2515* CAN;
-      //mutex_t* canMutex;
+      ACAN2515* CAN;                                   // CAN bus connection to this pack
       Bms* bms;
       //absolute_time_t lastUpdate;                      // Time we received last update from BMS
       int numModules;                                  //

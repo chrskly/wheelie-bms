@@ -25,8 +25,6 @@
 #include "statemachine.h"
 #include "bms.h"
 
-//#include "settings.h"
-
 
 BatteryPack::BatteryPack() {}
 
@@ -37,7 +35,6 @@ BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _c
     numModules = _numModules;
     numCellsPerModule = _numCellsPerModule;
     numTemperatureSensorsPerModule = _numTemperatureSensorsPerModule;
-    //canMutex = _canMutex;
     bms = _bms;
 
     // Initialise modules
@@ -47,27 +44,15 @@ BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _c
 
     // Set up dedicated CAN port for communicating with this pack
     printf("[pack%d] creating CAN port\n", id);
-    //mutex_enter_timeout_ms(canMutex, 3000);
-    //CAN = new MCP2515(spi0, CANCSPin, SPI_MISO, SPI_MOSI, SPI_CLK, 500000);
     CAN = new ACAN2515(CANCSPin, SPI, 0);
-    //printf("[pack%d] memory address of CAN port : %p\n", id, CAN);
-    //MCP2515::ERROR response;
-    //printf("[pack%d] resetting battery CAN port\n", id);
-    // response = CAN->reset();
-    // if ( response != MCP2515::ERROR_OK ) {
-    //     printf("[pack%d] WARNING problem resetting battery CAN port: %d\n", id, response);
-    // }
-    // response = CAN->setBitrate(CAN_500KBPS, MCP_8MHZ);
-    // if ( response != MCP2515::ERROR_OK ) {
-    //     printf("[pack%d] WARNING problem setting bitrate on battery CAN port : %d\n", id, response);
-    // }
-    // response = CAN->setNormalMode();
-    // if ( response != MCP2515::ERROR_OK ) {
-    //     printf("[pack%d] WARNING problem setting normal mode on battery CAN port : %d\n", id, response);
-    // }
-    //mutex_exit(canMutex);
-    
-    // printf("[pack%d] CAN port status : %d\n", id, CAN->getStatus());
+    ACAN2515Settings settings (QUARTZ_FREQUENCY, 500 * 1000);
+    settings.mRequestedMode = ACAN2515Settings::NormalMode;
+    const uint16_t errorCode = CAN->begin(settings, [] { CAN->isr () ; });
+    if ( errorCode != 0 ) {
+        printf("[pack%d] ERROR setting up CAN port: %d\n", id, errorCode);
+    } else {
+        printf("[pack%d] CAN port setup complete\n", id);
+    }
 
     CANMessage testFrame;
     testFrame.id = 0x000;
@@ -208,31 +193,19 @@ void BatteryPack::request_data() {
 }
 
 /*
- * Check for message from battery modules, parse as required.
- */
+ * Check for message from battery modules, parse as required. */
 void BatteryPack::read_message() {
-    //extern mutex_t canMutex;
     CANMessage frame;
 
-    // Try to get the mutex. If we can't, we'll try again next time.
-    // if ( !mutex_enter_timeout_ms(&canMutex, CAN_MUTEX_TIMEOUT_MS) ) {
-    //     printf("[pack%d][read_message] failed to get battery pack CAN mutex\n", this->id);
-    //     increment_can_rx_error_count();
-    //     return;
-    // }
-
     // Check for message
-    // MCP2515::ERROR result = CAN->readMessage(&frame);
     int result = CAN->receive(frame);
-    //mutex_exit(&canMutex);
 
     // Return if we don't have a message to process
-    // if ( result != MCP2515::ERROR_OK ) {
-    //     increment_can_rx_error_count();
-    //     return;
-    // }
+    if ( result == 0 ) {
+        return;
+    }
 
-    // printf("[pack%d][read_message] received message 0x%03X : ", this->id, frame.can_id);
+    // printf("[pack%d][read_message] received message 0x%03X : ", this->id, frame.id);
     // for ( int i = 0; i < frame.can_dlc; i++ ) {
     //     printf("%02X ", frame.data[i]);
     // }
@@ -250,45 +223,24 @@ void BatteryPack::read_message() {
     }
 }
 
+/*
+ * Send a CAN frame to the battery pack. Return true if successful, false if
+ * not. */
 bool BatteryPack::send_frame(CANMessage *frame) {
-    //extern mutex_t canMutex;
     for ( int i = 0; i < SEND_FRAME_RETRIES; i++ ) {
 
-        // printf("[pack%d][send_frame] 0x%03X  [ ", this->id, frame->can_id);
-        // for ( int i = 0; i < frame->can_dlc; i++ ) {
+        // printf("[pack%d][send_frame] 0x%03X  [ ", this->id, frame->id);
+        // for ( int i = 0; i < frame->len; i++ ) {
         //     printf("%02X ", frame->data[i]);
         // }
         // printf("]\n");
 
-        // Try to get the mutex. If we can't, we'll try again next time.
-        // if ( !mutex_enter_timeout_ms(&canMutex, CAN_MUTEX_TIMEOUT_MS) ) {
-        //     printf("[pack%d][send_frame] failed to get battery pack CAN mutex\n", this->id);
-        //     increment_can_tx_error_count();
-        //     continue;
-        // }
-        
-        // MCP2515::ERROR result = CAN->sendMessage(frame);
-        int result = CAN->tryToSend(*frame);
-        // mutex_exit(&canMutex);
-
-        // switch (result) {
-        //     case ACAN2515::Error::ERROR_FAIL:
-        //         printf("[pack%d][send_frame] ERROR sending message to battery pack (ERROR_FAIL)\n", this->id);
-        //         increment_can_tx_error_count();
-        //     case ACAN2515::Error::ERROR_ALLTXBUSY:
-        //         printf("[pack%d][send_frame] ERROR sending message to battery pack (ALLTXBUSY)\n", this->id);
-        //         increment_can_tx_error_count();
-        //     case ACAN2515::Error::ERROR_FAILINIT:
-        //         printf("[pack%d][send_frame] ERROR sending message to battery pack (FAILINIT)\n", this->id);
-        //         increment_can_tx_error_count();
-        //     case ACAN2515::Error::ERROR_FAILTX:
-        //         printf("[pack%d][send_frame] ERROR sending message to battery pack (FAILTX)\n", this->id);
-        //         increment_can_tx_error_count();
-        // }
-
-        // if ( result == ACAN2515::Error::ERROR_OK) {
+        if ( 0 == CAN->tryToSend(*frame) ) {
             return true;
-        // }
+        } else {
+            printf("[pack%d][send_frame] ERROR sending message to battery pack\n", this->id);
+            increment_can_tx_error_count();
+        }
     }
     return false;
 }
