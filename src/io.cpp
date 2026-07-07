@@ -1,0 +1,166 @@
+/*
+ * This file is part of the ev mustang bms project.
+ *
+ * Copyright (C) 2024 Christian Kelly <chrskly@chrskly.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include <stdio.h>
+
+#include "statemachine.h"
+#include "settings.h"
+#include "io.h"
+#include "bms.h"
+
+extern Bms bms;
+
+/*
+ * Interrupt handler for ignition signal changes. This is called when the
+ * ignition signal changes state (on/off). It reads the new state and sends
+ * the appropriate event to the state machine.
+ */
+void ignition_signal_changed() {
+    extern State state;
+    int newState = digitalRead(IGNITION_ENABLE_PIN);
+    std::string newStateStr = newState == 1 ? "on" : "off";
+    printf("[io] Ignition signal changed to : %s\n", newStateStr.c_str());
+    if ( newState ) {
+        bms.send_event(E_IGNITION_ON);
+    } else {
+        bms.send_event(E_IGNITION_OFF);
+    }
+}
+
+/*
+ * Interrupt handler for charge signal changes. This is called when the
+ * charge signal changes state (on/off). It reads the new state and sends
+ * the appropriate event to the state machine.
+ */
+void charge_signal_changed() {
+    extern State state;
+    int newState = digitalRead(CHARGE_ENABLE_PIN);
+    std::string newStateStr = newState == 1 ? "on" : "off";
+    printf("[io] Charge signal changed to : %s\n", newStateStr.c_str());
+    if ( newState ) {
+        bms.send_event(E_CHARGING_INITIATED);
+    } else {
+        bms.send_event(E_CHARGING_TERMINATED);
+    }
+}
+
+Io::Io() {
+    ignitionOn = false;
+    chargeEnable = false;
+
+    // IGNITION input
+    pinMode(IGNITION_ENABLE_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(IGNITION_ENABLE_PIN), ignition_signal_changed, CHANGE);
+
+    // CHARGE_ENABLE input
+    pinMode(CHARGE_ENABLE_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(CHARGE_ENABLE_PIN), charge_signal_changed, CHANGE);
+
+    // POS_CONTACTOR_FEEDBACK input
+    pinMode(POS_CONTACTOR_FEEDBACK_PIN, INPUT);
+
+    // NEG_CONTACTOR_FEEDBACK input
+    pinMode(NEG_CONTACTOR_FEEDBACK_PIN, INPUT);
+
+    // DRIVE_INHIBIT output
+    disable_drive_inhibit("initialization\n");
+    pinMode(DRIVE_INHIBIT_PIN, OUTPUT);
+
+    // CHARGE_INHIBIT output
+    pinMode(CHARGE_INHIBIT_PIN, OUTPUT);
+
+    // Heater output
+    disable_heater();
+    pinMode(HEATER_ENABLE_PIN, OUTPUT);
+    
+}
+
+// REMINDER : THESE OUTPUTS ARE A LOW SIDE SWITCHES.
+//     gpio high == on  == output low
+//     gpio low  == off == output high/floating?
+
+// DRIVE_INHIBIT output
+
+void Io::enable_drive_inhibit(std::string context) {
+    printf("[io] Enabling drive inhibit : %s\n", context.c_str());
+    digitalWrite(DRIVE_INHIBIT_PIN, HIGH);
+}
+
+void Io::disable_drive_inhibit(std::string context) {
+    printf("[io] Disabling drive inhibit : %s\n", context.c_str());
+    digitalWrite(DRIVE_INHIBIT_PIN, LOW);
+}
+
+bool Io::drive_is_inhibited() {
+    return digitalRead(DRIVE_INHIBIT_PIN) == HIGH;
+}
+
+// CHARGE_INHIBIT output
+
+void Io::enable_charge_inhibit(std::string context) {
+    printf("[io] Enabling charge inhibit : %s\n", context.c_str());
+    digitalWrite(CHARGE_INHIBIT_PIN, HIGH);
+}
+
+void Io::disable_charge_inhibit(std::string context) {
+    printf("[io] Disabling charge inhibit : %s\n", context.c_str());
+    digitalWrite(CHARGE_INHIBIT_PIN, LOW);
+}
+
+bool Io::charge_is_inhibited() {
+    return digitalRead(CHARGE_INHIBIT_PIN) == HIGH;
+}
+
+// HEATER output
+
+void Io::enable_heater() {
+    if ( !digitalRead(HEATER_ENABLE_PIN) ) {
+        printf("[io] Enabling heater\n");
+        digitalWrite(HEATER_ENABLE_PIN, HIGH);
+    }
+}
+
+void Io::disable_heater() {
+    if ( digitalRead(HEATER_ENABLE_PIN) == HIGH ) {
+        printf("[io] Disabling heater\n");
+        digitalWrite(HEATER_ENABLE_PIN, LOW);
+    }
+}
+
+bool Io::heater_is_enabled() {
+    return digitalRead(HEATER_ENABLE_PIN) == HIGH;
+}
+
+// Inputs
+
+bool Io::ignition_is_on() {
+    return digitalRead(IGNITION_ENABLE_PIN) == HIGH;
+}
+
+bool Io::charge_enable_is_on() {
+    return digitalRead(CHARGE_ENABLE_PIN) == HIGH;
+}
+
+bool Io::pos_contactor_is_welded() {
+    return digitalRead(POS_CONTACTOR_FEEDBACK_PIN) == HIGH;
+}
+
+bool Io::neg_contactor_is_welded() {
+    return digitalRead(NEG_CONTACTOR_FEEDBACK_PIN) == HIGH;
+}

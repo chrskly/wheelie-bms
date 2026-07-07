@@ -1,0 +1,1093 @@
+/*
+ * This file is part of the ev mustang bms project.
+ *
+ * Copyright (C) 2024 Christian Kelly <chrskly@chrskly.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+
+#include "Arduino.h"
+
+#include "bms.h"
+#include "shunt.h"
+#include "util.h"
+
+#include "settings.h"
+
+
+/*
+ * Perform all health checks.
+ */
+void health_check_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    extern Shunt shunt;
+
+    // Do dead cell detection (if we have more than one pack)
+    if ( battery.has_multiple_packs() && battery.has_dead_cell() ) {
+        bms.send_event(E_DEAD_CELL);
+    }
+
+    // Temperature
+    if ( battery.too_hot() ) {
+        bms.send_event(E_TOO_HOT);
+    } else if ( battery.too_cold_to_charge() ) {
+        bms.send_event(E_TOO_COLD_TO_CHARGE);
+    } else {
+        bms.send_event(E_TEMPERATURE_OK);
+    }
+
+    // Voltage
+    if ( battery.has_empty_cell() ) {
+        bms.send_event(E_BATTERY_EMPTY);
+    } else if ( battery.has_full_cell() ) {
+        bms.send_event(E_BATTERY_FULL);
+    } else {
+        bms.send_event(E_BATTERY_NOT_EMPTY);
+    }
+
+    // Do pack imbalance test (if we have more than one pack)
+    if ( battery.has_multiple_packs() ) {
+        if ( bms.packs_are_imbalanced() ) {
+            bms.send_event(E_PACKS_IMBALANCED);
+        } else {
+            bms.send_event(E_PACKS_NOT_IMBALANCED);
+        }
+    }
+
+    // Module liveness
+    if ( ! battery.is_alive() ) {
+        bms.send_event(E_MODULE_UNRESPONSIVE);
+    } else {
+        bms.send_event(E_MODULES_ALL_RESPONSIVE);
+    }
+
+    // Shunt liveness
+    if ( shunt.is_dead() ) {
+        bms.send_event(E_SHUNT_UNRESPONSIVE);
+    } else {
+        bms.send_event(E_SHUNT_RESPONSIVE);
+    }
+}
+
+TimerHandle_t healthCheckTimer = xTimerCreate(
+    "healthCheckTimer",             // Timer name
+    100 / portTICK_PERIOD_MS,       // 100ms period
+    pdTRUE,                         // Auto-reload (periodic timer)
+    NULL,                           // Timer ID
+    health_check_callback                   // Callback function
+);
+
+/*
+ * Run recurring calculations
+ */
+void calculations_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    bms.update_max_charge_current();
+    bms.update_max_discharge_current();
+    bms.recalculate_soc();
+    // TODO : range estimate
+}
+
+TimerHandle_t calculationsTimer = xTimerCreate(
+    "calculationsTimer",            // Timer name
+    1000 / portTICK_PERIOD_MS,      // 1ms period
+    pdTRUE,                         // Auto-reload (periodic timer)
+    NULL,                           // Timer ID
+    calculations_callback            // Callback function
+);
+
+
+//// ----
+//
+// Outbound message handlers
+//
+//// ----
+
+
+/*
+ * Send CAN messages to ISA shunt to tell it to reset. Resets the kw/ah
+ * counters.
+ */
+void Bms::send_shunt_reset_message() {
+    CANMessage shuntResetFrame;
+    zero_frame(&shuntResetFrame);
+    shuntResetFrame.id = 0x411;
+    shuntResetFrame.data[0] = 0x3F;
+    shuntResetFrame.data[1] = 0x00;
+    shuntResetFrame.data[2] = 0x00;
+    shuntResetFrame.data[3] = 0x00;
+    shuntResetFrame.data[4] = 0x00;
+    shuntResetFrame.data[5] = 0x00;
+    shuntResetFrame.data[6] = 0x00;
+    shuntResetFrame.data[7] = 0x00;
+    this->send_frame(&shuntResetFrame, false);
+}
+
+
+/*
+ * Limits message 0x351
+ *
+ * Follows the SimpBMS format.
+ *
+ * byte 0 = Charge voltage LSB, scale 0.1, unit V
+ * byte 1 = Charge voltage MSB, scale 0.1, unit V
+ * byte 2 = Charge current LSB, scale 0.1, unit A
+ * byte 3 = Charge current MSB, scale 0.1, unit A
+ * byte 4 = Discharge current LSB, scale 0.1, unit A
+ * byte 5 = Discharge current MSB, scale 0.1, unit A
+ * byte 6 = Discharge voltage LSB, scale 0.1, unit V
+ * byte 7 = Discharge voltage MSB, scale 0.1, unit V
+ */
+
+void send_limits_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    CANMessage limitsFrame;
+    zero_frame(&limitsFrame);
+    limitsFrame.id = 0x351;
+    limitsFrame.data[0] = (uint8_t)( battery.get_max_voltage() * 10 ) && 0xFF;
+    limitsFrame.data[1] = (uint8_t)( battery.get_max_voltage() * 10 ) >> 8;
+    limitsFrame.data[2] = (uint8_t)( bms.get_max_charge_current() * 10 ) && 0xFF;
+    limitsFrame.data[3] = (uint8_t)( bms.get_max_charge_current() * 10 ) >> 8;
+    limitsFrame.data[4] = (uint8_t)( bms.get_max_discharge_current() * 10 ) && 0xFF;
+    limitsFrame.data[5] = (uint8_t)( bms.get_max_discharge_current() * 10 ) >> 8;
+    limitsFrame.data[6] = (uint8_t)( battery.get_min_voltage() * 10 ) && 0xFF;
+    limitsFrame.data[7] = (uint8_t)( battery.get_min_voltage() * 10 ) >> 8;
+    bms.send_frame(&limitsFrame, false);
+}
+
+TimerHandle_t limitsMessageTimer = xTimerCreate(
+    "limitsMessageTimer",           // Timer name
+    1000 / portTICK_PERIOD_MS,      // 1s period
+    pdTRUE,                         // Auto-reload (periodic timer)
+    NULL,                           // Timer ID
+    send_limits_message_callback    // Callback function
+);
+
+
+/*
+ * BMS state message 0x352
+ *
+ * Custom message format (not in SimpBMS)
+ *
+ * byte 0 = bms state
+ *   00 = standby
+ *   01 = drive
+ *   02 = batteryHeating
+ *   03 = charging
+ *   04 = batteryEmpty
+ *   05 = overTempFault
+ *   06 = illegalStateTransitionFault
+ *   07 = criticalFault
+ *   FF = Undefined error
+ * byte 1 = error bits
+ *   bit 0 = internalError          - something has gone wrong in the BMS
+ *   bit 1 = packsImbalanced        - the voltage between two or more packs varies by an unsafe amount
+ *   bit 2 = shuntIsDead            - the shunt has not sent a message in SHUNT_TTL seconds
+ *   bit 3 = illegalStateTransition - We tried to transistion between states in an illegal way
+ *   bit 4 = module(s) dead         - one or more modules have not sent a message in MODULE_TTL seconds
+ *   bit 5 = 
+ *   bit 6 = 
+ *   bit 7 = 
+ * byte 2 = status bits
+ *   bit 0 = inhibitCharge
+ *   bit 1 = inhibitDrive
+ *   bit 2 = heaterEnabled
+ *   bit 3 = ignitionOn
+ *   bit 4 = chargeEnable
+ *   bit 5 = disableRegen
+ *   bit 6 =
+ *   bit 7 =
+ * byte 3 = charge inhibit reason
+ *   00 = R_NONE
+ *   01 = R_TOO_HOT
+ *   02 = R_TOO_COLD
+ *   03 = R_BATTERY_FULL
+ *   04 = R_BATTERY_EMPTY
+ *   05 = R_CHARGING
+ *   06 = R_ILLEGAL_STATE_TRANSITION
+ * byte 4 = drive inhibit reason
+ *   Same mapping as charge inhibit reason
+ * byte 5 = welding bits
+ *   bit 0 = posContactorWelded   - the positive contactor is welded shut
+ *   bit 1 = negContactorWelded   - the negative contactor is welded shut
+ *   bit 2 = batt1ContactorWelded - the battery 1 contactor is welded shut
+ *   bit 3 = batt2ContactorWelded - the battery 2 contactor is welded shut
+ * byte 6 = unused
+ * byte 7 = checksum
+ */
+
+void send_bms_state_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    CANMessage bmsStateFrame;
+    zero_frame(&bmsStateFrame);
+
+    bmsStateFrame.id = 0x352;
+
+    if ( bms.get_state() == &state_standby ) {
+        bmsStateFrame.data[0] = 0x00;
+    } else if ( bms.get_state() == &state_drive ) {
+        bmsStateFrame.data[0] = 0x01;
+    } else if ( bms.get_state() == &state_batteryHeating ) {
+        bmsStateFrame.data[0] = 0x02;
+    } else if ( bms.get_state() == &state_charging ) {
+        bmsStateFrame.data[0] = 0x03;
+    } else if ( bms.get_state() == &state_batteryEmpty ) {
+        bmsStateFrame.data[0] = 0x04;
+    } else if ( bms.get_state() == &state_overTempFault ) {
+        bmsStateFrame.data[0] = 0x05;
+    } else if ( bms.get_state() == &state_illegalStateTransitionFault ) {
+        bmsStateFrame.data[0] = 0x06;
+    } else if ( bms.get_state() == &state_criticalFault ) {
+        bmsStateFrame.data[0] = 0x07;
+    } else {
+        bmsStateFrame.data[0] = 0xFF;
+    }
+
+    bmsStateFrame.data[1] = bms.get_error_byte();
+    bmsStateFrame.data[2] = bms.get_status_byte();
+    bmsStateFrame.data[3] = bms.get_charge_inhibit_reason();
+    bmsStateFrame.data[4] = bms.get_drive_inhibit_reason();
+    bmsStateFrame.data[5] = bms.get_welding_byte();
+    bmsStateFrame.data[6] = 0x00;
+    bmsStateFrame.data[7] = 0x00; // checksum
+    bms.send_frame(&bmsStateFrame, true);
+}
+
+TimerHandle_t bmsStateMessageTimer = xTimerCreate(
+    "bmsStateMessageTimer",          // Timer name
+    1000 / portTICK_PERIOD_MS,       // 1s period
+    pdTRUE,                          // Auto-reload (periodic timer)
+    NULL,                            // Timer ID
+    send_bms_state_message_callback  // Callback function
+);
+
+
+/*
+ * Module liveness message 0x353
+ *
+ * Custom message format (not in SimpBMS)
+ *
+ * byte 0 = modules 0-7 heartbeat status (0 alive, 1 dead)
+ * byte 1 = modules 8-15 hearbeat status (0 alive, 1 dead)
+ * byte 2 = modules 16-23 heartbeat status (0 alive, 1 dead)
+ * byte 3 = modules 24-31 heartbeat status (0 alive, 1 dead)
+ * byte 4 = modules 32-39 heartbeat status (0 alive, 1 dead)
+ * byte 5 = invalidEventCounter LSB
+ * byte 6 = invalidEventCounter MSB
+ * byte 7 = checksum
+ */
+
+void send_module_liveness_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    CANMessage moduleLivenessFrame;
+    zero_frame(&moduleLivenessFrame);
+    moduleLivenessFrame.id = 0x353;
+    moduleLivenessFrame.data[0] = battery.get_module_liveness_byte(0);
+    moduleLivenessFrame.data[1] = battery.get_module_liveness_byte(8);
+    moduleLivenessFrame.data[2] = battery.get_module_liveness_byte(16);
+    moduleLivenessFrame.data[3] = battery.get_module_liveness_byte(24);
+    moduleLivenessFrame.data[4] = battery.get_module_liveness_byte(32);
+    moduleLivenessFrame.data[5] = (uint8_t)bms.get_invalid_event_count() && 0xFF;
+    moduleLivenessFrame.data[6] = (uint8_t)bms.get_invalid_event_count() >> 8;
+    moduleLivenessFrame.data[7] = 0x00;  // checksum
+    bms.send_frame(&moduleLivenessFrame, true);
+}
+
+TimerHandle_t moduleLivenessMessageTimer = xTimerCreate(
+    "moduleLivenessMessageTimer",    // Timer name
+    5000 / portTICK_PERIOD_MS,       // 5s period
+    pdTRUE,                          // Auto-reload (periodic timer)
+    NULL,                            // Timer ID
+    send_module_liveness_message_callback  // Callback function
+);
+
+/*
+ * Main CAN bus tx/rx error counters message 0x354
+ *
+ * Custom message format (not in SimpBMS)
+ *
+ * byte 0 - 3 = can tx error counters (32bit counter)
+ * byte 4 - 7 = can rx error counters (32bit counter)
+ */
+
+void send_main_can_error_counters_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    CANMessage mainCanErrorCountersFrame;
+    zero_frame(&mainCanErrorCountersFrame);
+    mainCanErrorCountersFrame.id = 0x354;
+    mainCanErrorCountersFrame.data[0] = bms.get_can_tx_error_count() && 0xFF;
+    mainCanErrorCountersFrame.data[1] = bms.get_can_tx_error_count() >> 8 && 0xFF;
+    mainCanErrorCountersFrame.data[2] = bms.get_can_tx_error_count() >> 16 && 0xFF;
+    mainCanErrorCountersFrame.data[3] = bms.get_can_tx_error_count() >> 24 && 0xFF;
+    mainCanErrorCountersFrame.data[4] = bms.get_can_rx_error_count() && 0xFF;
+    mainCanErrorCountersFrame.data[5] = bms.get_can_rx_error_count() >> 8 && 0xFF;
+    mainCanErrorCountersFrame.data[6] = bms.get_can_rx_error_count() >> 16 && 0xFF;
+    mainCanErrorCountersFrame.data[7] = bms.get_can_rx_error_count() >> 24 && 0xFF;
+    bms.send_frame(&mainCanErrorCountersFrame, false);
+}
+
+TimerHandle_t mainCanErrorCountersMessageTimer = xTimerCreate(
+    "mainCanErrorCountersMessageTimer",            // Timer name
+    1000 / portTICK_PERIOD_MS,                     // 1s period
+    pdTRUE,                                        // Auto-reload (periodic timer)
+    NULL,                                          // Timer ID
+    send_main_can_error_counters_message_callback  // Callback function
+);
+
+
+/*
+ * SoC message 0x355
+ *
+ * Follows the SimpBMS format.
+ *
+ * byte 0 = SoC LSB, scale 1, unit %
+ * byte 1 = SoC MSB, scale 1, unit %
+ * byte 2 = SoH LSB, scale 1, unit %
+ * byte 3 = SoH MSB, scale 1, unit %
+ * byte 4 = SoC LSB, scale 0.01, unit %
+ * byte 5 = SoC MSB, scale 0.01, unit %
+ * byte 6 = unused
+ * byte 7 = unused
+ */
+
+void send_soc_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    CANMessage socFrame;
+    zero_frame(&socFrame);
+    socFrame.id = 0x355;
+    socFrame.data[0] = (uint8_t)bms.get_soc() && 0xFF;            // SoC LSB
+    socFrame.data[1] = (uint8_t)bms.get_soc() >> 8;               // SoC MSB
+    socFrame.data[2] = 0x00;                                      // SoH, not implemented
+    socFrame.data[3] = 0x00;                                      // SoH, not implemented
+    socFrame.data[4] = (uint8_t)( bms.get_soc() * 100 ) && 0xFF;  // SoC LSB, scaled
+    socFrame.data[5] = (uint8_t)( bms.get_soc() * 100 ) >> 8;     // SoC MSB, scaled
+    socFrame.data[6] = 0x00;                                      // unused
+    socFrame.data[7] = 0x00;                                      // unused
+    bms.send_frame(&socFrame, false);
+}
+
+TimerHandle_t sendSocMessageTimer = xTimerCreate(
+    "sendSocMessageTimer",            // Timer name
+    1000 / portTICK_PERIOD_MS,                     // 1s period
+    pdTRUE,                                        // Auto-reload (periodic timer)
+    NULL,                                          // Timer ID
+    send_soc_message_callback             // Callback function
+);
+
+/*
+ * Status message 0x356
+ *
+ * More or less follows the SimpBMS format.
+ *
+ * byte 0 = Voltage LSB, scale 0.01, unit V
+ * byte 1 = Voltage MSB, scale 0.01, unit V
+ * byte 2 = Current LSB, scale 0.1, unit A
+ * byte 3 = Current MSB, scale 0.1, unit A
+ * byte 4 = Temperature LSB, scale 0.1, unit C
+ * byte 5 = Temperature MSB, scale 0.1, unit C
+ * byte 6 = Voltage LSB (measured by shunt), scale 0.01, unit V
+ * byte 7 = Voltage MSB (measured by shunt), scale 0.01, unit V
+ */
+
+void send_status_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    extern Shunt shunt;
+    CANMessage statusFrame;
+    zero_frame(&statusFrame);
+    statusFrame.id = 0x356;
+    statusFrame.data[0] = (uint8_t)( battery.get_voltage() * 100 ) && 0xFF;
+    statusFrame.data[1] = (uint8_t)( battery.get_voltage() * 100 ) >> 8;
+    statusFrame.data[2] = (uint8_t)( shunt.get_amps() * 10 ) && 0xFF;
+    statusFrame.data[3] = (uint8_t)( shunt.get_amps() * 10 ) >> 8;
+    statusFrame.data[4] = battery.get_highest_sensor_temperature() && 0xFF;
+    statusFrame.data[5] = (uint8_t)battery.get_highest_sensor_temperature() >> 8;
+    statusFrame.data[6] = (uint8_t)( shunt.get_voltage1() * 100 ) && 0xFF;
+    statusFrame.data[7] = (uint8_t)( shunt.get_voltage1() * 100 ) >> 8;
+    bms.send_frame(&statusFrame, false);
+}
+
+TimerHandle_t sendStatusMessageTimer = xTimerCreate(
+    "sendStatusMessageTimer",            // Timer name
+    1000 / portTICK_PERIOD_MS,                     // 1s period
+    pdTRUE,                                        // Auto-reload (periodic timer)
+    NULL,                                          // Timer ID
+    send_status_message_callback             // Callback function
+);
+
+/*
+ * Pack CAN bus tx/rx error counters message 0x357
+ *
+ * Custom message format (not in SimpBMS)
+ *
+ * byte 0 - 1 = pack 0 can tx error counters (16bit counter)
+ * byte 2 - 3 = pack 0 can rx error counters (16bit counter)
+ * byte 4 - 5 = pack 1 can tx error counters (16bit counter)
+ * byte 6 - 7 = pack 1 can rx error counters (16bit counter)
+ */
+
+void send_pack_can_error_counters_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    CANMessage packCanErrorCountersFrame;
+    zero_frame(&packCanErrorCountersFrame);
+    packCanErrorCountersFrame.id = 0x357;
+    packCanErrorCountersFrame.data[0] = battery.get_can_tx_error_count_for_pack(0) && 0xFF;
+    packCanErrorCountersFrame.data[1] = battery.get_can_tx_error_count_for_pack(0) >> 8 && 0xFF;
+    packCanErrorCountersFrame.data[2] = battery.get_can_rx_error_count_for_pack(0) && 0xFF;
+    packCanErrorCountersFrame.data[3] = battery.get_can_rx_error_count_for_pack(0) >> 8 && 0xFF;
+    packCanErrorCountersFrame.data[4] = battery.get_can_tx_error_count_for_pack(1) && 0xFF;
+    packCanErrorCountersFrame.data[5] = battery.get_can_tx_error_count_for_pack(1) >> 8 && 0xFF;
+    packCanErrorCountersFrame.data[6] = battery.get_can_rx_error_count_for_pack(1) && 0xFF;
+    packCanErrorCountersFrame.data[7] = battery.get_can_rx_error_count_for_pack(1) >> 8 && 0xFF;
+    bms.send_frame(&packCanErrorCountersFrame, false);
+}
+
+TimerHandle_t sendPackCanErrorCountersMessageTimer = xTimerCreate(
+    "sendPackCanErrorCountersMessageTimer",            // Timer name
+    1000 / portTICK_PERIOD_MS,                     // 1s period
+    pdTRUE,                                        // Auto-reload (periodic timer)
+    NULL,                                          // Timer ID
+    send_pack_can_error_counters_message_callback             // Callback function
+);
+
+/*
+ * Alarms message 0x35A
+ *
+ * Mostly follows the SimpBMS format, with a couple of variations. Also used the
+ * victron format for some of the bits.
+ *
+ * First 4 bytes are alarms, second 4 bytes are warnings.
+ *
+ * byte 0
+ *   bit 0 = general alarm
+ *   bit 2 = high cell alarm
+ *   bit 4 = low cell alarm
+ *   bit 6 = high temp alarm
+ * byte 1
+ *   bit 0 = low temp alarm
+ *   bit 2 = high temp charge alarm
+ *   bit 4 = low temp charge alarm
+ *   bit 6 = high current alarm
+ * byte 2
+ *   bit 0 = high charge current alarm
+ *   bit 2 = contactor on
+ *   bit 4 = short circuit alarm
+ *   bit 6 = internal error
+ * byte 3
+ *   bit 0 = cell delta alarm
+ * byte 4
+ *   bit 0 = general warn
+ *   bit 2 = high cell warn
+ *   bit 4 = low cell warn
+ *   bit 6 = high temp warn
+ * byte 5
+ *   bit 0 = low temp warn
+ *   bit 2 = high temp charge warn
+ *   bit 4 = low temp charge warn
+ *   bit 6 = high current warn
+ * byte 6
+ *   bit 0 = high charge current warn
+ *   bit 2 = contactor on
+ *   bit 4 = short circuit warn
+ *   bit 6 = internal error
+ * byte 7 = checksum
+ *   bit 0 = cell delta warn
+ */
+
+void send_alarm_message_callback(TimerHandle_t xTimer) {
+    extern Bms bms;
+    extern Battery battery;
+    CANMessage alarmFrame;
+    zero_frame(&alarmFrame);
+    alarmFrame.id = 0x35A;
+
+    // byte 0, bit 0, general alarm
+    if ( bms.get_internal_error() ) { alarmFrame.data[0] |= 0x01; }
+    // byte 0, bit 2 : overvolt alarm
+    if ( battery.has_full_cell() ) { alarmFrame.data[0] |= 0x04; }
+    // byte 0, bit 4 : undervolt alarm
+    if ( battery.has_empty_cell() ) { alarmFrame.data[0] |= 0x08; }
+    // byte 0, bit 6 : high temp alarm
+    if ( battery.too_hot() ) { alarmFrame.data[0] |= 0x20; }
+
+    // byte 1, bit 0 : low temp alarm
+    if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x01; }
+    // byte 1, bit 2 : high temp charge alarm
+    if ( battery.too_hot() ) { alarmFrame.data[1] |= 0x04; }
+    // byte 1, bit 4 : low temp charge alarm
+    if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x08; }
+    // FIXME byte 1, bit 6 : high current alarm
+
+    // FIXME byte 2, bit 0 : high charge current alarm
+    // byte 2, bit 2 : contactor on alarm
+    if ( bms.charge_is_enabled() || bms.ignition_is_on() ) { alarmFrame.data[2] |= 0x04; }
+    // FIXME byte 2, bit 4 : short circuit alarm
+    // byte 2, bit 6 : internal error alarm
+    if ( bms.get_internal_error() ) { alarmFrame.data[2] |= 0x20; }
+
+    // byte 3, bit 0 : cell delta alarm
+    if ( battery.cell_delta_above_alarm() ) { alarmFrame.data[3] |= 0x01; }
+
+    // FIXME byte 4, bit 0 : general warn
+    // byte 4, bit 2 : overvolt warn
+    if ( battery.has_full_cell() ) { alarmFrame.data[4] |= 0x04; }
+    // byte 4, bit 4 : undervolt warn
+    if ( battery.has_empty_cell() ) { alarmFrame.data[4] |= 0x08; }
+    // byte 4, bit 6 : high temp warn
+    if ( battery.too_hot() ) { alarmFrame.data[4] |= 0x20; }
+
+    // byte 5, bit 0 : low temp warn
+    if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x01; }
+    // byte 5, bit 2 : high temp charge warn
+    if ( battery.too_hot() ) { alarmFrame.data[5] |= 0x04; }
+    // byte 5, bit 4 : low temp charge warn
+    if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x08; }
+    // FIXME byte 5, bit 6 : high current warn
+
+    // FIXME byte 6, bit 0 : high charge current warn
+    // byte 6, bit 2 : contactor on warn
+    if ( bms.charge_is_enabled() || bms.ignition_is_on() ) { alarmFrame.data[6] |= 0x04; }
+    // FIXME byte 6, bit 4 : short circuit warn
+    // byte 6, bit 6 : internal error warn
+    if ( bms.get_internal_error() ) { alarmFrame.data[6] != 0x40; }
+
+    // FIXME byte 7, bit 0 : cell delta warn
+    if ( battery.cell_delta_above_warn() ) { alarmFrame.data[7] |= 0x01; }
+
+    bms.send_frame(&alarmFrame, false);
+}
+
+TimerHandle_t sendAlarmMessageTimer = xTimerCreate(
+    "sendAlarmMessageTimer",            // Timer name
+    1000 / portTICK_PERIOD_MS,                     // 1s period
+    pdTRUE,                                        // Auto-reload (periodic timer)
+    NULL,                                          // Timer ID
+    send_alarm_message_callback             // Callback function
+);
+
+
+//// ----
+//
+// Inbound message handlers
+//
+//// ----
+
+
+// Handle messages coming in on the main CAN bus
+
+void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
+    CANMessage m;
+    extern Shunt shunt;
+    extern Bms bms;
+    if ( bms.read_frame(&m) ) {
+        switch ( m.id ) {
+            // ISA shunt amps
+            case 0x521:
+                shunt.set_amps( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) );
+                shunt.heartbeat();
+                break;
+            // ISA shunt voltage 1
+            case 0x522:
+                shunt.set_voltage1( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.heartbeat();
+                break;
+            // ISA shunt voltage 2
+            case 0x523:
+                shunt.set_voltage2( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.heartbeat();
+                break;
+            // ISA shunt voltage 3
+            case 0x524:
+                shunt.set_voltage3( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.heartbeat();
+                break;
+            // ISA shunt temperature
+            case 0x525:
+                shunt.set_temperature( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 10 );
+                shunt.heartbeat();
+                break;
+            // ISA shunt kilowatts
+            case 0x526:
+                shunt.set_watts( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.heartbeat();
+                break;
+            // ISA shunt amp-hours
+            case 0x527:
+                shunt.set_ampSeconds( (int32_t)(m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) );
+                shunt.heartbeat();
+                break;
+            // ISA shunt kilowatt-hours
+            case 0x528:
+                shunt.set_wattHours( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) );
+                shunt.heartbeat();
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+TimerHandle_t handleMainCanMessageTimer = xTimerCreate(
+    "handleMainCanMessageTimer",       // Timer name
+    5 / portTICK_PERIOD_MS,            // 5ms period
+    pdTRUE,                            // Auto-reload (periodic timer)
+    NULL,                              // Timer ID
+    handle_main_CAN_messages_callback  // Callback function
+);
+
+
+
+Bms::Bms(Battery* _battery, Io* _io, Shunt* _shunt) {
+    battery = _battery;
+    state = &state_standby;
+    io = _io;
+    shunt = _shunt;
+    internalError = false;
+    statusLight = StatusLight(this);
+    chargeInhibitReason = R_NONE;
+    driveInhibitReason = R_NONE;
+
+    printf("[bms][init] setting up main CAN port\n");
+    // CAN = new MCP2515(SPI_PORT, MAIN_CAN_CS, SPI_MISO, SPI_MOSI, SPI_CLK, 500000);
+    // MCP2515::ERROR result = CAN->reset();
+    // if ( result != MCP2515::ERROR_OK ) {
+    //     printf("[bms][init] WARNING problem resetting main CAN port : %d\n", result);
+    // }
+    // result = CAN->setBitrate(CAN_500KBPS, MCP_8MHZ);
+    // if ( result != MCP2515::ERROR_OK ) {
+    //     printf("[bms][init] WARNING problem setting bitrate on main CAN port : %d\n", result);
+    // }
+    // result = CAN->setNormalMode();
+    // if ( result != MCP2515::ERROR_OK ) {
+    //     printf("[bms][init] WARNING problem setting normal mode on main CAN port : %d\n", result);
+    // }
+    CAN = new ACAN2515(MAIN_CAN_CS, SPI, 0);
+    printf("[bms][init] main CAN port memory address : %p\n", CAN);
+
+    /*
+    printf("[bms][init] sending 5 test messages\n");
+    for ( int i = 0; i < 5; i++ ) {
+        can_frame m;
+        m.can_id = 0x100 + i;
+        m.can_dlc = 8;
+        for ( int j = 0; j < 8; j++ ) {
+            m.data[j] = j;
+        }
+        this->send_frame(&m, true);
+    }
+    */
+
+    printf("[bms][init] enabling CAN message handlers\n");
+    // limits (out)
+    xTimerStart(limitsMessageTimer, 0);
+    // bms state (out)
+    xTimerStart(bmsStateMessageTimer, 0);
+    // module liveness (out)
+    xTimerStart(moduleLivenessMessageTimer, 0);
+    // can error counters (out)
+    xTimerStart(mainCanErrorCountersMessageTimer, 0);
+    // soc (out)
+    xTimerStart(sendSocMessageTimer, 0);
+    // status (out)
+    xTimerStart(sendStatusMessageTimer, 0);
+    // Alarms (out)
+    xTimerStart(sendAlarmMessageTimer, 0);
+    // main CAN (in)
+    xTimerStart(handleMainCanMessageTimer, 0);
+    // health checks
+    xTimerStart(healthCheckTimer, 0);
+    // calculations
+    xTimerStart(calculationsTimer, 0);
+}
+
+void Bms::set_state(State newState, std::string reason) {
+    std::string oldStateName = get_state_name(state);
+    std::string newStateName = get_state_name(newState);
+    printf("[bms][set_state] switching from state %s to state %s, reason : %s\n", oldStateName.c_str(), newStateName.c_str(), reason.c_str());
+    state = newState;
+    // Change light blinking pattern based on state
+    if ( state == state_standby ) {
+        statusLight.set_mode(STANDBY);
+    } else if ( state == state_drive ) {
+        statusLight.set_mode(DRIVE);
+    } else if ( state == state_batteryHeating ) {
+        statusLight.set_mode(CHARGING);
+    } else if ( state == state_charging ) {
+        statusLight.set_mode(CHARGING);
+    } else if ( state == state_batteryEmpty ) {
+        statusLight.set_mode(FAULT);
+    } else if ( state == state_overTempFault ) {
+        statusLight.set_mode(FAULT);
+    } else if ( state == state_illegalStateTransitionFault ) {
+        statusLight.set_mode(FAULT);
+    } else if ( state == state_criticalFault ) {
+        statusLight.set_mode(FAULT);
+    } else {
+        statusLight.set_mode(FAULT);
+    }
+}
+
+State Bms::get_state() {
+    return state;
+}
+
+void Bms::send_event(Event event) {
+    state(event);
+}
+
+void Bms::print() {
+    std::string chg_inh = io->charge_is_inhibited() ? "true" : "false";
+    std::string drv_inh = io->drive_is_inhibited() ? "true" : "false";
+    std::string ign = io->ignition_is_on() ? "true" : "false";
+    std::string chg_en = io->charge_enable_is_on() ? "true" : "false";
+    int8_t Tmax = battery->get_highest_sensor_temperature();
+    int8_t Tmin = battery->get_lowest_sensor_temperature();
+    int16_t Vmax = battery->get_highest_cell_voltage();
+    int16_t Vmin = battery->get_lowest_cell_voltage();
+    printf("State:%s, SoC:%d, DRV_INH:%s, CHG_INH:%s, IGN:%s, CHG_EN:%s\n",
+        get_state_name(get_state()), soc, drv_inh.c_str(), chg_inh.c_str(), ign.c_str(), chg_en.c_str());
+    printf(" V:%d, VMax:%d, VMin:%d\n", battery->get_voltage()/1000, Vmax, Vmin );
+    printf(" TMax:%d, TMin:%d\n", Tmax, Tmin );
+    battery->print();
+}
+
+// Watchdog
+
+void Bms::set_watchdog_reboot(bool value) {
+    watchdogReboot = value;
+}
+
+// DRIVE_INHIBIT
+
+void Bms::enable_drive_inhibit(std::string context, InhibitReason reason) {
+    if ( !drive_is_inhibited() ) {
+        set_drive_inhibit_reason(reason);
+        io->enable_drive_inhibit(context);
+    }
+}
+
+void Bms::disable_drive_inhibit(std::string context) {
+    clear_drive_inhibit_reason();
+    if ( drive_is_inhibited() ) {
+        io->disable_drive_inhibit(context);
+    }
+}
+
+bool Bms::drive_is_inhibited() {
+    return io->drive_is_inhibited();
+}
+
+void Bms::set_drive_inhibit_reason(InhibitReason reason) {
+    driveInhibitReason = reason;
+}
+
+void Bms::clear_drive_inhibit_reason() {
+    driveInhibitReason = R_NONE;
+}
+
+int8_t Bms::get_drive_inhibit_reason() {
+    return driveInhibitReason;
+}
+
+// CHARGE_INHIBIT
+
+void Bms::enable_charge_inhibit(std::string context, InhibitReason reason) {
+    if ( !charge_is_inhibited() ) {
+        set_charge_inhibit_reason(reason);
+        io->enable_charge_inhibit(context);
+    }
+}
+
+void Bms::disable_charge_inhibit(std::string context) {
+    clear_charge_inhibit_reason();
+    if ( charge_is_inhibited() ) {
+        io->disable_charge_inhibit(context);
+    }
+}
+
+bool Bms::charge_is_inhibited() {
+    return io->charge_is_inhibited();
+}
+
+void Bms::set_charge_inhibit_reason(InhibitReason reason) {
+    chargeInhibitReason = reason;
+}
+
+void Bms::clear_charge_inhibit_reason() {
+    chargeInhibitReason = R_NONE;
+}
+
+int8_t Bms::get_charge_inhibit_reason() {
+    return chargeInhibitReason;
+}
+
+// HEATER
+
+void Bms::enable_heater() {
+    io->enable_heater();
+}
+
+void Bms::disable_heater() {
+    io->disable_heater();
+}
+
+bool Bms::heater_is_enabled() {
+    return io->heater_is_enabled();
+}
+
+// IGNITION
+
+bool Bms::ignition_is_on() {
+    return io->ignition_is_on();
+}
+
+// CHARGE_ENABLE
+
+bool Bms::charge_is_enabled() {
+    return io->charge_enable_is_on();
+}
+
+// SoC
+
+uint8_t Bms::get_soc() {
+    return soc;
+}
+
+/*
+ * Recalculate the SoC based on the latest data from the ISA shunt.
+ *
+ * 0 khw/ah == 100% charged. Value goes negative as we draw energy from the pack.
+ */
+void Bms::recalculate_soc() {
+    if ( CALCULATE_SOC_FROM_AMP_SECONDS == 1 ) {
+        soc = 100 * (BATTERY_CAPACITY_AS + shunt->get_ampSeconds()) / BATTERY_CAPACITY_AS;
+    } else {
+        soc = 100 * (BATTERY_CAPACITY_WH + shunt->get_wattHours()) / BATTERY_CAPACITY_WH;
+    }
+}
+
+// Error
+
+void Bms::set_internal_error() {
+    internalError = true;
+}
+
+void Bms::clear_internal_error() {
+    internalError = false;
+}
+
+// Combine error bits into error byte to send out in status CAN message
+uint8_t Bms::get_error_byte() {
+    return (
+        0x00 | \
+        internalError | \
+        battery->packs_are_imbalanced() << 1 | \
+        shunt->is_dead() << 2 | \
+        illegalStateTransition << 3 | \
+        ! battery->is_alive() << 4
+    );
+}
+
+/* Combine status bits into status byte to send out in status CAN message
+ * bit 0 = charge inhibited
+ * bit 1 = drive inhibited
+ * bit 2 = heater enabled
+ * bit 3 = ignition on
+ * bit 4 = charge enabled
+ * bit 5 = regen not allowed
+ * bit 6 =
+ * bit 7 =
+ */
+uint8_t Bms::get_status_byte() {
+    return (
+        0x00 | \
+        charge_is_inhibited() | \
+        drive_is_inhibited() << 1 | \
+        heater_is_enabled() << 2 | \
+        ignition_is_on() << 3 | \
+        charge_is_enabled() << 4 | \
+        regen_not_allowed() << 5
+    );
+}
+
+void Bms::increment_invalid_event_count() {
+    invalidEventCounter++;
+}
+
+uint8_t Bms::get_welding_byte() {
+    return (
+        0x00 | \
+        posContactorWelded | \
+        negContactorWelded << 1 | \
+        packContactorsWelded[0] << 2 | \
+        packContactorsWelded[1] << 3
+    );
+
+}
+
+void Bms::do_welding_checks() {
+    posContactorWelded = io->pos_contactor_is_welded();
+    negContactorWelded = io->neg_contactor_is_welded();
+    packContactorsWelded[0] = battery->contactor_is_welded(0);
+    packContactorsWelded[1] = battery->contactor_is_welded(1);
+}
+
+// Charging
+
+// FIXME account for inhibited packs
+uint16_t Bms::get_max_charge_current_by_soc() {
+    return 0;
+}
+
+void Bms::update_max_charge_current() {
+    // Safeties
+    if ( battery->too_hot() || charge_is_inhibited() ) {
+        maxChargeCurrent = 0;
+        return;
+    }
+    maxChargeCurrent = std::min(battery->get_max_charge_current_by_temperature(), get_max_charge_current_by_soc());
+}
+
+uint16_t Bms::get_max_charge_current() {
+    return maxChargeCurrent;
+}
+
+void Bms::update_max_discharge_current() {
+    // FIXME actual implementation
+    maxDischargeCurrent = 100;
+}
+
+uint16_t Bms::Bms::get_max_discharge_current() {
+    return maxDischargeCurrent;
+}
+
+// statusLight
+
+void Bms::led_blink() {
+    statusLight.led_blink();
+}
+
+// Track when the pack voltages match each other
+void Bms::pack_voltages_match_heartbeat() {
+    lastTimePackVoltagesMatched = get_clock();
+}
+
+bool Bms::packs_are_imbalanced() {
+    return ( get_clock() - lastTimePackVoltagesMatched ) > PACKS_IMBALANCED_TTL;
+}
+
+
+// Comms
+
+bool Bms::send_frame(CANMessage* frame, bool doChecksum) {
+    for ( int t = 0; t < SEND_FRAME_RETRIES; t++ ) {
+        // printf("[bms][send_frame] 0x%03X  [ ", frame->can_id);
+        // for ( int i = 0; i < frame->can_dlc; i++ ) {
+        //     printf("%02X ", frame->data[i]);
+        // }
+        // printf("]\n");
+
+        if ( doChecksum ) {
+            // Calculate XOR checksum
+            frame->data[7] = 0;
+            for ( int i = 0; i < 7; i++ ) {
+                frame->data[7] ^= frame->data[i];
+            }
+        }
+
+        // if ( !mutex_enter_timeout_ms(&canMutex, CAN_MUTEX_TIMEOUT_MS) ) {
+        //     increment_can_tx_error_count();
+        //     continue;
+        // }
+
+        // MCP2515::ERROR result = this->CAN->sendMessage(frame);
+        bool status = CAN->tryToSend(*frame);
+        // mutex_exit(&canMutex);
+
+        if ( !status ) {
+            increment_can_tx_error_count();
+            continue;
+        }
+
+        // Sending failed, try again
+        // if ( result != MCP2515::ERROR_OK ) {
+        //     if ( result == MCP2515::ERROR_FAIL ) {
+        //         printf(" [send_frame %d] ERROR_FAIL, try again\n", t);
+        //         increment_can_tx_error_count();
+        //     } else if ( result == MCP2515::ERROR_ALLTXBUSY ) {
+        //         printf(" [send_frame %d] ERROR_ALLTXBUSY, try again\n", t);
+        //         increment_can_tx_error_count();
+        //     } else if ( result == MCP2515::ERROR_FAILINIT ) {
+        //         printf(" [send_frame %d] ERROR_FAILINIT, try again\n", t);
+        //         increment_can_tx_error_count();
+        //     } else if ( result == MCP2515::ERROR_FAILTX ) {
+        //         printf(" [send_frame %d] ERROR_FAILTX, try again\n", t);
+        //         increment_can_tx_error_count();
+        //     } else if ( result == MCP2515::ERROR_NOMSG ) {
+        //         printf(" [send_frame %d] ERROR_NOMSG, try again\n", t);
+        //         increment_can_tx_error_count();
+        //     }
+        //     continue;
+        // }
+        // Frame was sent
+        return true;
+    }
+    // Failed to send after all retries
+    return false;
+}
+
+bool Bms::read_frame(CANMessage* frame) {
+    for ( int t = 0; t < READ_FRAME_RETRIES; t++ ) {    
+        // if ( !mutex_enter_timeout_ms(&canMutex, CAN_MUTEX_TIMEOUT_MS) ) {
+        //     increment_can_rx_error_count();
+        //     return false;
+        // }
+        // MCP2515::ERROR result = this->CAN->readMessage(frame);
+        int result = this->CAN->receive(*frame);
+        // mutex_exit(&canMutex);
+        // if ( result != MCP2515::ERROR_OK ) {
+        //     if ( result == MCP2515::ERROR_FAIL ) {
+        //         printf("[bms][read_frame] %d/%d ERROR_FAIL, try again\n", t, READ_FRAME_RETRIES);
+        //         increment_can_rx_error_count();
+        //     } else if ( result == MCP2515::ERROR_ALLTXBUSY ) {
+        //         printf("[bms][read_frame] %d/%d ERROR_ALLTXBUSY, try again\n", t, READ_FRAME_RETRIES);
+        //         increment_can_rx_error_count();
+        //     } else if ( result == MCP2515::ERROR_FAILINIT ) {
+        //         printf("[bms][read_frame] %d/%d ERROR_FAILINIT, try again\n", t, READ_FRAME_RETRIES);
+        //         increment_can_rx_error_count();
+        //     } else if ( result == MCP2515::ERROR_FAILTX ) {
+        //         printf("[bms][read_frame] %d/%d ERROR_FAILTX, try again\n", t, READ_FRAME_RETRIES);
+        //         increment_can_rx_error_count();
+        //     } else if ( result == MCP2515::ERROR_NOMSG ) {
+        //         return true;
+        //     }
+        //     continue;
+        // }
+        // Frame was read, print it out
+        // printf("[bms][read_frame] 0x%03X  [ ", frame->can_id);
+        // for ( int i = 0; i < frame->can_dlc; i++ ) {
+        //     printf("%02X ", frame->data[i]);
+        // }
+        // printf("]\n");
+        return true;
+    }
+    // Failed to read after all retries
+    return false;
+}
