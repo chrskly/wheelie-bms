@@ -24,7 +24,23 @@
 #include "module.h"
 #include "statemachine.h"
 #include "bms.h"
+#include "settings.h"
 
+/*
+ * Don't love this, but we need a way to call the CAN ISR for each pack from a
+ * single interrupt service routine. This is a bit of a hack, but it works.
+ */
+namespace {
+    ACAN2515* packCanPorts[NUM_PACKS] = { nullptr };
+
+    void can_isr_all_packs() {
+        for ( int i = 0; i < NUM_PACKS; i++ ) {
+            if ( packCanPorts[i] != nullptr ) {
+                packCanPorts[i]->isr();
+            }
+        }
+    }
+}
 
 BatteryPack::BatteryPack() {}
 
@@ -45,9 +61,12 @@ BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _c
     // Set up dedicated CAN port for communicating with this pack
     printf("[pack%d] creating CAN port\n", id);
     CAN = new ACAN2515(CANCSPin, SPI, 0);
+    if ( id >= 0 && id < NUM_PACKS ) {
+        packCanPorts[id] = CAN;
+    }
     ACAN2515Settings settings (QUARTZ_FREQUENCY, 500 * 1000);
     settings.mRequestedMode = ACAN2515Settings::NormalMode;
-    const uint16_t errorCode = CAN->begin(settings, [] { CAN->isr () ; });
+    const uint16_t errorCode = CAN->begin(settings, can_isr_all_packs);
     if ( errorCode != 0 ) {
         printf("[pack%d] ERROR setting up CAN port: %d\n", id, errorCode);
     } else {
@@ -75,13 +94,13 @@ BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _c
 
     // Set up contactor control.
     contactorInhibitPin = _contactorInhibitPin;
-    printf("[pack%d] setting up contactor control\n");
+    printf("[pack%d] setting up contactor control\n", id);
     pinMode(contactorInhibitPin, OUTPUT);
     digitalWrite(contactorInhibitPin, LOW);
 
     // Set up contactor feedback
     contactorFeedbackPin = _contactorFeedbackPin;
-    pinMode(NEG_CONTACTOR_FEEDBACK_PIN, INPUT);
+    pinMode(contactorFeedbackPin, INPUT);
 
     // Set next balance time to 10 seconds from now
     //nextBalanceTime = delayed_by_us(get_absolute_time(), 10000);

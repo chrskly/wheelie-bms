@@ -19,6 +19,7 @@
 
 
 #include "Arduino.h"
+#include <ACAN_ESP32.h>
 
 #include "bms.h"
 #include "shunt.h"
@@ -665,34 +666,26 @@ Bms::Bms(Battery* _battery, Io* _io, Shunt* _shunt) {
     driveInhibitReason = R_NONE;
 
     printf("[bms][init] setting up main CAN port\n");
-    // CAN = new MCP2515(SPI_PORT, MAIN_CAN_CS, SPI_MISO, SPI_MOSI, SPI_CLK, 500000);
-    // MCP2515::ERROR result = CAN->reset();
-    // if ( result != MCP2515::ERROR_OK ) {
-    //     printf("[bms][init] WARNING problem resetting main CAN port : %d\n", result);
-    // }
-    // result = CAN->setBitrate(CAN_500KBPS, MCP_8MHZ);
-    // if ( result != MCP2515::ERROR_OK ) {
-    //     printf("[bms][init] WARNING problem setting bitrate on main CAN port : %d\n", result);
-    // }
-    // result = CAN->setNormalMode();
-    // if ( result != MCP2515::ERROR_OK ) {
-    //     printf("[bms][init] WARNING problem setting normal mode on main CAN port : %d\n", result);
-    // }
-    CAN = new ACAN2515(MAIN_CAN_CS, SPI, 0);
-    printf("[bms][init] main CAN port memory address : %p\n", CAN);
+    ACAN_ESP32_Settings settings(500 * 1000);
+    settings.mRxPin = GPIO_NUM_16;
+    settings.mTxPin = GPIO_NUM_17;
+    const uint32_t errorCode = ACAN_ESP32::can.begin(settings);
+    if ( errorCode == 0 ) {
+        printf("[bms][init] main CAN port initialized successfully\n");
+    } else {
+        printf("[bms][init] WARNING problem initializing main CAN port : %lu\n", errorCode);
+    }
 
-    /*
     printf("[bms][init] sending 5 test messages\n");
     for ( int i = 0; i < 5; i++ ) {
-        can_frame m;
-        m.can_id = 0x100 + i;
-        m.can_dlc = 8;
+        CANMessage m;
+        m.id = 0x100 + i;
+        m.len = 8;
         for ( int j = 0; j < 8; j++ ) {
             m.data[j] = j;
         }
         this->send_frame(&m, true);
     }
-    */
 
     printf("[bms][init] enabling CAN message handlers\n");
     // limits (out)

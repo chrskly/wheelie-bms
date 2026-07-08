@@ -93,7 +93,7 @@ class BatteryPack {
       uint16_t get_can_rx_error_count() { return canRxErrorCount; }
 
    private:
-      ACAN2515* CAN;                                   // CAN bus connection to this pack
+      ACAN2515* CAN;                                    // CAN bus connection to this pack
       Bms* bms;
       //absolute_time_t lastUpdate;                      // Time we received last update from BMS
       int numModules;                                  //

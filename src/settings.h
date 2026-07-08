@@ -23,6 +23,7 @@
 #define VERSION 1.0
 
 #define LED_PIN 25
+static const uint32_t QUARTZ_FREQUENCY = 16UL * 1000UL * 1000UL;  // 16 MHz
 
 // Serial port
 #define UART_ID      uart0
