@@ -228,7 +228,13 @@ bool BatteryModule::is_alive() {
      * flag rather than "lastHeartbeat == 0", which misread a heartbeat that
      * happened to land on millisecond zero. */
     if ( !hasReported ) {
-        return false;
+        /* Nothing heard from this module yet. For the first MODULE_TTL_MS after
+         * boot that is simply expected -- the polling sweep has not finished --
+         * so give it the same window a live module gets before calling it dead.
+         * Reporting "not alive" from the first instant dropped the BMS into
+         * criticalFault on every single boot. Data-dependent paths are guarded
+         * separately by all_module_data_populated() and by CI_STARTUP. */
+        return get_clock_ms() < MODULE_TTL_MS;
     }
     return ( get_clock_ms() - lastHeartbeat ) < MODULE_TTL_MS;
 }

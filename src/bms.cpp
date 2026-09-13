@@ -721,10 +721,15 @@ void handle_main_CAN_messages_callback() {
 void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     battery = _battery;
     state = &state_standby;
+    stateEnteredAt = get_clock_ms();
     io = _io;
     shunt = _shunt;
     internalErrorFlags = 0;
     statusLight = StatusLight(this);
+    /* init() assigns `state` directly rather than going through set_state(), so
+     * select the matching blink pattern explicitly -- otherwise both durations
+     * stay at their defaults of 0 and the light sits solid on. */
+    statusLight.set_mode(STANDBY);
     /* Io::init() physically asserts both inhibits as the fail-safe power-on
      * state. Seed the reason masks to match: with empty masks the first
      * disable_*_inhibit() call of the first health check would find nothing

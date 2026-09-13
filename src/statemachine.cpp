@@ -140,7 +140,13 @@ void state_standby(Event event) {
             /* If the batteries are not warm enough to be charged, turn on the
              * battery heater, and disallow charging until they're warm enough. */
             if ( battery.too_cold_to_charge() ) {
-                bms.enable_heater();
+                /* The heater is NOT switched on here. state_batteryHeating's
+                 * safety block owns it, and only turns it on once its guards
+                 * pass. Energising it on the way in meant that at power-on,
+                 * with no temperature data yet (which makes
+                 * too_cold_to_charge() true), the heater ran for up to a full
+                 * health-check period before anything checked whether it
+                 * should. */
                 bms.enable_charge_inhibit("[S09] too cold to charge", R_TOO_COLD);
                 bms.set_state(&state_batteryHeating, "charge requested, but too cold to charge");
                 break;
@@ -463,7 +469,7 @@ void state_charging(Event event) {
 
     switch (event) {
         case E_TOO_COLD_TO_CHARGE:
-            bms.enable_heater();
+            // See [S09]: state_batteryHeating's safety block owns the heater.
             bms.enable_charge_inhibit("[C01] too cold to charge", R_TOO_COLD);
             bms.set_state(&state_batteryHeating, "too cold to charge");
             break;
@@ -638,8 +644,8 @@ void state_batteryEmpty(Event event) {
                 battery.disable_inhibit_contactors_for_charge();
             }
             if ( battery.too_cold_to_charge() ) {
+                // See [S09]: state_batteryHeating's safety block owns the heater.
                 bms.enable_charge_inhibit("[E07] too cold to charge", R_TOO_COLD);
-                bms.enable_heater();
                 bms.set_state(&state_batteryHeating, "charge requested, but too cold to charge");
                 break;
             }
@@ -831,6 +837,21 @@ void state_overTempFault(Event event) {
  *   - We tried to go straight from drive to charge with imbalanced packs
  */
 void state_illegalStateTransitionFault(Event event) {
+    /* Level-based escape. The two exits below are driven by edge events
+     * (E_IGNITION_OFF / E_CHARGING_TERMINATED) and each tests the OTHER signal,
+     * so clearing the fault relies on those two edges arriving in a workable
+     * order. Checking the levels directly removes that dependency: once neither
+     * ignition nor charging is asking for anything, there is nothing left to
+     * have made an illegal transition between. */
+    if ( !bms.ignition_is_on() && !bms.charge_is_enabled() ) {
+        bms.clear_illegal_state_transition();
+        bms.disable_drive_inhibit("[I05] fault cleared", R_ILLEGAL_STATE_TRANSITION);
+        bms.disable_charge_inhibit("[I05] fault cleared", R_ILLEGAL_STATE_TRANSITION);
+        bms.disable_heater();
+        bms.set_state(&state_standby, "ignition and charging both off");
+        return;
+    }
+
     // Safeties
     bms.enable_drive_inhibit("[I00] illegal state transition", R_ILLEGAL_STATE_TRANSITION);
     bms.enable_charge_inhibit("[I00] illegal state transition", R_ILLEGAL_STATE_TRANSITION);
