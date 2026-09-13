@@ -80,6 +80,7 @@ class Bms {
         bool watchdogReboot = false;           //
         uint64_t lastTimePackVoltagesMatched = 0;  // get_clock_ms() when pack voltages last matched
         uint64_t stateEnteredAt = 0;           // get_clock_ms() when the current state was entered
+        uint64_t hvContactorsShouldBeOpenSince = 0;   // get_clock_ms(), for weld-check settling
         struct CANMessage canFrame;            //
         uint16_t invalidEventCounter = 0;      // Count how many times the state machine has seen an invalid event
         bool illegalStateTransition = false;   //
@@ -171,7 +172,6 @@ class Bms {
         uint16_t get_invalid_event_count() { return invalidEventCounter; };
         uint8_t get_welding_byte();
         void do_welding_checks();
-        uint64_t hvContactorsShouldBeOpenSince = 0;   // get_clock_ms(), for weld-check settling
 
         void set_illegal_state_transition() { illegalStateTransition = true; }
         void clear_illegal_state_transition() { illegalStateTransition = false; }

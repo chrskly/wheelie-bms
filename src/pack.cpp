@@ -29,8 +29,13 @@
 
 BatteryPack::BatteryPack() {}
 
-void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _contactorFeedbackPin,
-        int _numModules, int _numCellsPerModule, int _numTemperatureSensorsPerModule, Bms* _bms) {
+void BatteryPack::init(const BatteryPackConfig& config) {
+
+    const int _id = config.id;
+    const int CANCSPin = config.canChipSelectPin;
+    const int _contactorInhibitPin = config.contactorInhibitPin;
+    const int _contactorFeedbackPin = config.contactorFeedbackPin;
+    int _numModules = config.numModules;
 
     id = _id;
     if ( _numModules > MODULES_PER_PACK ) {
@@ -42,8 +47,8 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
         _numModules = 0;
     }
     numModules = _numModules;
-    numCellsPerModule = _numCellsPerModule;
-    numTemperatureSensorsPerModule = _numTemperatureSensorsPerModule;
+    numCellsPerModule = config.numCellsPerModule;
+    numTemperatureSensorsPerModule = config.numTemperatureSensorsPerModule;
 
     // Build the CRC table before anything can call getcheck()
     crc8.begin();

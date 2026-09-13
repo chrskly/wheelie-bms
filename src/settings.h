@@ -224,7 +224,7 @@ static_assert(every_pin_is_unique(),
 
 #define WARNING_TEMPERATURE 30                      // 
 #define MAXIMUM_TEMPERATURE 50                      // Stop everything if the battery is above this temperature
-#define CHARGE_TEMPERATURE_MINIMUM -10              // minimum temperature required to allow charging
+#define CHARGE_TEMPERATURE_MINIMUM (-10)            // minimum temperature required to allow charging
 #define CHARGE_TEMPERATURE_DERATING_MINIMUM 15      // where temperature based derating kicks in
 #define CHARGE_TEMPERATURE_DERATING_THRESHOLD 1     // Allow temperature to increase this much per minute. Above that, derate.
 

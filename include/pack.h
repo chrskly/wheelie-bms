@@ -41,6 +41,23 @@ enum ContactorInhibitReason {
     CI_IMBALANCE = 1 << 2,   // this pack is too far from the others to parallel safely
 };
 
+/* Configuration for one pack.
+ *
+ * A struct rather than a positional parameter list: init() previously took
+ * seven adjacent ints, so transposing (say) the contactor inhibit and feedback
+ * pins compiled cleanly and produced a BMS that drove the feedback line as an
+ * output and read its own inhibit line for weld detection. Assigning by name at
+ * the call site makes that class of mistake impossible. */
+struct BatteryPackConfig {
+    int id = -1;
+    int canChipSelectPin = -1;
+    int contactorInhibitPin = -1;
+    int contactorFeedbackPin = -1;
+    int numModules = 0;
+    int numCellsPerModule = 0;
+    int numTemperatureSensorsPerModule = 0;
+};
+
 class BatteryPack {
 
    public:
@@ -50,8 +67,7 @@ class BatteryPack {
       /* Initialise in place. Do NOT construct a temporary and copy-assign it:
        * each BatteryModule stores a back-pointer to its parent pack, so building
        * a temporary BatteryPack leaves every module pointing at freed stack. */
-      void init(int _id, int CANCSPin, int _contactorInhibitPin, int _contactorFeedbackPin, int _numModules,
-            int _numCellsPerModule, int _numTemperatureSensorsPerModule, Bms* _bms);
+      void init(const BatteryPackConfig& config);
 
       void set_battery(Battery* parent) { this->battery = parent; }
 

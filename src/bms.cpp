@@ -104,7 +104,7 @@ static void reconcile_inhibit_reasons() {
      * the battery reports. */
 }
 
-void health_check_callback() {
+static void health_check_callback() {
     extern Bms bms;
     extern Battery battery;
     extern Shunt shunt;
@@ -190,7 +190,7 @@ void health_check_callback() {
 /*
  * Run recurring calculations
  */
-void calculations_callback() {
+static void calculations_callback() {
     extern Bms bms;
     bms.update_max_charge_current();
     bms.update_max_discharge_current();
@@ -242,7 +242,7 @@ void Bms::send_shunt_reset_message() {
  * byte 7 = Discharge voltage MSB, scale 0.1, unit V
  */
 
-void send_limits_message_callback() {
+static void send_limits_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage limitsFrame;
@@ -313,7 +313,7 @@ void send_limits_message_callback() {
  * byte 7 = checksum
  */
 
-void send_bms_state_message_callback() {
+static void send_bms_state_message_callback() {
     extern Bms bms;
     CANMessage bmsStateFrame;
     zero_frame(&bmsStateFrame);
@@ -367,7 +367,7 @@ void send_bms_state_message_callback() {
  * byte 7 = checksum
  */
 
-void send_module_liveness_message_callback() {
+static void send_module_liveness_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage moduleLivenessFrame;
@@ -393,7 +393,7 @@ void send_module_liveness_message_callback() {
  * byte 4 - 7 = can rx error counters (32bit counter)
  */
 
-void send_main_can_error_counters_message_callback() {
+static void send_main_can_error_counters_message_callback() {
     extern Bms bms;
     CANMessage mainCanErrorCountersFrame;
     zero_frame(&mainCanErrorCountersFrame);
@@ -420,7 +420,7 @@ void send_main_can_error_counters_message_callback() {
  * byte 7 = unused
  */
 
-void send_soc_message_callback() {
+static void send_soc_message_callback() {
     extern Bms bms;
     CANMessage socFrame;
     zero_frame(&socFrame);
@@ -449,7 +449,7 @@ void send_soc_message_callback() {
  * byte 7 = Voltage MSB (measured by shunt), scale 0.01, unit V
  */
 
-void send_status_message_callback() {
+static void send_status_message_callback() {
     extern Bms bms;
     extern Battery battery;
     extern Shunt shunt;
@@ -480,7 +480,7 @@ void send_status_message_callback() {
  * byte 6 - 7 = pack 1 can rx error counters (16bit counter)
  */
 
-void send_pack_can_error_counters_message_callback() {
+static void send_pack_can_error_counters_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage packCanErrorCountersFrame;
@@ -543,7 +543,7 @@ void send_pack_can_error_counters_message_callback() {
  * 0x10 and 0x40 for bits 0, 2, 4 and 6 respectively.
  */
 
-void send_alarm_message_callback() {
+static void send_alarm_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage alarmFrame;
@@ -644,7 +644,7 @@ static int32_t shunt_payload(const CANMessage& m) {
 }
 
 
-void handle_main_CAN_messages_callback() {
+static void handle_main_CAN_messages_callback() {
     CANMessage m;
     extern Shunt shunt;
     extern Bms bms;

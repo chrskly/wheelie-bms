@@ -17,37 +17,18 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "Arduino.h"
-
 #include <stdio.h>
-#include <string>
 
 #include "battery.h"
 #include "bms.h"
 #include "pack.h"
 #include "io.h"
-#include "statemachine.h"
 #include "settings.h"
 #include "util.h"
 
 
-/*
- * Poll all packs for voltage and temperature data every second.
- */
-void poll_packs() {
-    extern Battery battery;
-    battery.request_data();
-}
 
 
-/*
- * Handle inbound CAN messages from the battery.
- */
-
-void handle_inbound_CAN_messages() {
-    extern Battery battery;
-    battery.read_message();
-}
 
 
 
@@ -64,7 +45,15 @@ void Battery::initialise(Bms* _bms) {
 
     for ( int p = 0; p < numPacks; p++ ) {
         printf("[battery] Initialising battery pack %d (CS:%d, inh:%d, mod/pack:%d, cell/mod:%d, T/mod:%d)\n", p, CS_PINS[p], INHIBIT_CONTACTOR_PINS[p], MODULES_PER_PACK, CELLS_PER_MODULE, TEMPS_PER_MODULE);
-        packs[p].init(p, CS_PINS[p], INHIBIT_CONTACTOR_PINS[p], CONTACTOR_FEEDBACK_PINS[p], MODULES_PER_PACK, CELLS_PER_MODULE, TEMPS_PER_MODULE, bms);
+        BatteryPackConfig config;
+        config.id                             = p;
+        config.canChipSelectPin               = CS_PINS[p];
+        config.contactorInhibitPin            = INHIBIT_CONTACTOR_PINS[p];
+        config.contactorFeedbackPin           = CONTACTOR_FEEDBACK_PINS[p];
+        config.numModules                     = MODULES_PER_PACK;
+        config.numCellsPerModule              = CELLS_PER_MODULE;
+        config.numTemperatureSensorsPerModule = TEMPS_PER_MODULE;
+        packs[p].init(config);
         packs[p].set_battery(this);
         printf("[battery] Initialisation of battery pack %d complete\n", p);
     }
@@ -141,7 +130,7 @@ void Battery::recalculate_voltage() {
         if ( packs[p].has_dead_cell() ) {
             continue;
         }
-        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        const uint32_t packVoltage = packs[p].get_voltage();
         if ( packVoltage > highestHealthy ) {
             highestHealthy = packVoltage;
         }
@@ -177,7 +166,7 @@ int Battery::get_index_of_high_pack() {
         if ( packs[p].has_dead_cell() ) {
             continue;
         }
-        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        const uint32_t packVoltage = packs[p].get_voltage();
         if ( packVoltage > high_pack_voltage ) {
             high_pack_index = p;
             high_pack_voltage = packVoltage;
@@ -205,7 +194,7 @@ int Battery::get_index_of_low_pack() {
         if ( packs[p].has_dead_cell() ) {
             continue;
         }
-        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        const uint32_t packVoltage = packs[p].get_voltage();
         if ( packVoltage < low_pack_voltage ) {
             low_pack_index = p;
             low_pack_voltage = packVoltage;
@@ -341,7 +330,7 @@ uint32_t Battery::voltage_delta_between_packs() {
             continue;
         }
         eligiblePacks++;
-        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        const uint32_t packVoltage = packs[p].get_voltage();
         if ( packVoltage > highestPackVoltage ) {
             highestPackVoltage = packVoltage;
         }
@@ -622,7 +611,7 @@ void Battery::reevaluate_contactor_inhibition_for_drive() {
         return;
     }
     int highPackId = get_index_of_high_pack();
-    uint32_t highPackVoltage = (uint32_t)packs[highPackId].get_voltage();
+    uint32_t highPackVoltage = packs[highPackId].get_voltage();
     /* No usable voltage reading yet: do not let anything close. */
     if ( highPackVoltage == 0 ) {
         for ( int p = 0; p < numPacks; p++ ) {
@@ -641,7 +630,7 @@ void Battery::reevaluate_contactor_inhibition_for_drive() {
             packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
             continue;
         }
-        if ( (uint32_t)packs[p].get_voltage() >= targetVoltage ) {
+        if ( packs[p].get_voltage() >= targetVoltage ) {
             packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
         } else {
             packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
@@ -659,7 +648,7 @@ void Battery::reevaluate_contactor_inhibition_for_charge() {
         return;
     }
     int lowPackId = get_index_of_low_pack();
-    uint32_t lowPackVoltage = (uint32_t)packs[lowPackId].get_voltage();
+    uint32_t lowPackVoltage = packs[lowPackId].get_voltage();
     // No usable voltage reading yet: do not let anything close.
     if ( lowPackVoltage == 0 ) {
         for ( int p = 0; p < numPacks; p++ ) {
@@ -673,7 +662,7 @@ void Battery::reevaluate_contactor_inhibition_for_charge() {
             packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
             continue;
         }
-        if ( (uint32_t)packs[p].get_voltage() <= targetVoltage ) {
+        if ( packs[p].get_voltage() <= targetVoltage ) {
             packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
         } else {
             packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
