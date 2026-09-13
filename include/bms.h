@@ -33,6 +33,7 @@
 
 enum InternalErrorSource {
     IE_HEATER_INEFFECTIVE = 1 << 4,   // heating ran too long, or ran without usable temperature data
+    IE_TEMPERATURE_STALE  = 1 << 5,   // no temperature frame within MODULE_TTL_MS
     IE_LOW_CELL_RANGE  = 1 << 0,   // lowest cell voltage outside the plausible range
     IE_HIGH_CELL_RANGE = 1 << 1,   // highest cell voltage outside the plausible range
     IE_LOW_TEMP_RANGE  = 1 << 2,   // lowest sensor temperature outside the plausible range
@@ -52,7 +53,7 @@ enum InhibitReason {
     R_MODULE_UNRESPONSIVE,
     R_SHUNT_UNRESPONSIVE,
     R_CRITICAL_FAULT,
-    R_DEAD_CELL,
+    R_DEAD_CELL,        // a cell is below DEAD_CELL_VOLTAGE and cannot be isolated
     R_STARTUP,          // held from power-on until the battery reports
 };
 
@@ -161,6 +162,7 @@ class Bms {
         void set_internal_error(InternalErrorSource source);
         void clear_internal_error(InternalErrorSource source);
         bool get_internal_error() { return internalErrorFlags != 0; };
+        bool has_internal_error(InternalErrorSource source) { return ( internalErrorFlags & (uint8_t)source ) != 0; }
 
         uint8_t get_error_byte();
         uint8_t get_status_byte();

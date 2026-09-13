@@ -205,8 +205,11 @@ void state_drive(Event event) {
      * transition out of this state, and each fault state withdraws its own
      * reason on exit. */
     bms.disable_drive_inhibit("[D00] driving", R_CHARGING);
-    bms.disable_drive_inhibit("[D00] driving", R_BATTERY_EMPTY);
     bms.disable_drive_inhibit("[D00] driving", R_ILLEGAL_STATE_TRANSITION);
+    /* R_BATTERY_EMPTY is deliberately NOT withdrawn here. Being in the drive
+     * state does not make the battery not-empty, and clearing it
+     * unconditionally could mask a real empty-battery hold. The reconciliation
+     * pass withdraws it when has_empty_cell() actually goes false. */
     bms.disable_heater();
 
     switch (event) {
@@ -328,9 +331,12 @@ void state_batteryHeating(Event event) {
     const bool heatingTimedOut = ( bms.time_in_state_ms() > BATTERY_HEATING_TIMEOUT_MS );
     if ( heatingBlind || heatingTimedOut ) {
         bms.disable_heater();
+        // Log on the transition only; this block runs for every event dispatched
+        if ( !bms.has_internal_error(IE_HEATER_INEFFECTIVE) ) {
+            printf("[statemachine] heating abandoned : %s\n",
+                   heatingBlind ? "temperature data stale" : "timed out");
+        }
         bms.set_internal_error(IE_HEATER_INEFFECTIVE);
-        printf("[statemachine] heating abandoned : %s\n",
-               heatingBlind ? "temperature data stale" : "timed out");
     } else {
         bms.clear_internal_error(IE_HEATER_INEFFECTIVE);
         bms.enable_heater();
@@ -945,18 +951,21 @@ void state_criticalFault(Event event) {
             break;
         case E_MODULES_ALL_RESPONSIVE:
             if ( ! shunt.is_dead() ) {
-                /* Re-check the conditions that own their own fault state before
-                 * handing control back to drive or charge. */
-                if ( battery.too_hot() ) {
-                    bms.set_state(&state_overTempFault, "critical fault cleared but battery too hot");
-                    break;
-                }
+                /* Withdraw the fault holds FIRST. Doing the too_hot() detour
+                 * before this left R_CRITICAL_FAULT set on both masks with no
+                 * path to withdraw it -- a permanent lockout. */
                 bms.disable_drive_inhibit("[CF01] critical fault cleared", R_CRITICAL_FAULT);
                 bms.disable_charge_inhibit("[CF01] critical fault cleared", R_CRITICAL_FAULT);
                 bms.disable_charge_inhibit("[CF01] critical fault cleared", R_MODULE_UNRESPONSIVE);
                 bms.disable_drive_inhibit("[CF01] critical fault cleared", R_MODULE_UNRESPONSIVE);
                 bms.disable_charge_inhibit("[CF01] critical fault cleared", R_SHUNT_UNRESPONSIVE);
                 bms.disable_drive_inhibit("[CF01] critical fault cleared", R_SHUNT_UNRESPONSIVE);
+                /* Re-check the conditions that own their own fault state before
+                 * handing control back to drive or charge. */
+                if ( battery.too_hot() ) {
+                    bms.set_state(&state_overTempFault, "critical fault cleared but battery too hot");
+                    break;
+                }
                 if ( bms.charge_is_enabled() ) {
                     bms.set_state(&state_charging, "critical fault cleared");
                     break;
@@ -973,17 +982,17 @@ void state_criticalFault(Event event) {
             break;
         case E_SHUNT_RESPONSIVE:
             if ( battery.is_alive() ) {
-                // See [CF01]: do not hand control back into an over-temperature pack.
-                if ( battery.too_hot() ) {
-                    bms.set_state(&state_overTempFault, "critical fault cleared but battery too hot");
-                    break;
-                }
+                // See [CF01]: withdraw the fault holds before any detour.
                 bms.disable_drive_inhibit("[CF02] critical fault cleared", R_CRITICAL_FAULT);
                 bms.disable_charge_inhibit("[CF02] critical fault cleared", R_CRITICAL_FAULT);
                 bms.disable_charge_inhibit("[CF02] critical fault cleared", R_MODULE_UNRESPONSIVE);
                 bms.disable_drive_inhibit("[CF02] critical fault cleared", R_MODULE_UNRESPONSIVE);
                 bms.disable_charge_inhibit("[CF02] critical fault cleared", R_SHUNT_UNRESPONSIVE);
                 bms.disable_drive_inhibit("[CF02] critical fault cleared", R_SHUNT_UNRESPONSIVE);
+                if ( battery.too_hot() ) {
+                    bms.set_state(&state_overTempFault, "critical fault cleared but battery too hot");
+                    break;
+                }
                 if ( bms.charge_is_enabled() ) {
                     bms.set_state(&state_charging, "critical fault cleared");
                     break;

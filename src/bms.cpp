@@ -81,9 +81,19 @@ static void reconcile_inhibit_reasons() {
         bms.disable_drive_inhibit("[RC] no illegal transition", R_ILLEGAL_STATE_TRANSITION);
         bms.disable_charge_inhibit("[RC] no illegal transition", R_ILLEGAL_STATE_TRANSITION);
     }
-    /* R_CRITICAL_FAULT and R_STARTUP are deliberately NOT reconciled here:
-     * criticalFault withdraws its own on exit, and R_STARTUP is withdrawn below
-     * once the battery reports. */
+    if ( bms.get_state() != &state_criticalFault ) {
+        /* Belt and braces: criticalFault withdraws this on its own exits, but an
+         * exit path that forgets to would otherwise strand it permanently --
+         * exactly the failure this whole pass is about. */
+        bms.disable_drive_inhibit("[RC] not in critical fault", R_CRITICAL_FAULT);
+        bms.disable_charge_inhibit("[RC] not in critical fault", R_CRITICAL_FAULT);
+    }
+    if ( !battery.has_dead_cell() ) {
+        bms.disable_drive_inhibit("[RC] no dead cell", R_DEAD_CELL);
+        bms.disable_charge_inhibit("[RC] no dead cell", R_DEAD_CELL);
+    }
+    /* R_STARTUP is deliberately not reconciled here; it is withdrawn below once
+     * the battery reports. */
 }
 
 void health_check_callback() {
@@ -99,9 +109,24 @@ void health_check_callback() {
      * meaningful. */
     bms.do_welding_checks();
 
-    // Do dead cell detection (if we have more than one pack)
-    if ( battery.has_multiple_packs() && battery.has_dead_cell() ) {
-        bms.send_event(E_DEAD_CELL);
+    // Report stale temperature data, which silently gates several decisions
+    if ( battery.temperature_data_is_stale() ) {
+        bms.set_internal_error(IE_TEMPERATURE_STALE);
+    } else {
+        bms.clear_internal_error(IE_TEMPERATURE_STALE);
+    }
+
+    /* Dead cell detection. With multiple packs the affected pack's contactors
+     * are held open and the rest carries on. With a single pack there is
+     * nothing to isolate, so the only safe response is to inhibit outright --
+     * previously a dead cell in a single-pack battery was not acted on at all. */
+    if ( battery.has_dead_cell() ) {
+        if ( battery.has_multiple_packs() ) {
+            bms.send_event(E_DEAD_CELL);
+        } else {
+            bms.enable_drive_inhibit("[HC] dead cell, single pack", R_DEAD_CELL);
+            bms.enable_charge_inhibit("[HC] dead cell, single pack", R_DEAD_CELL);
+        }
     }
 
     // Temperature
