@@ -83,13 +83,7 @@ void health_check_callback(TimerHandle_t xTimer) {
     }
 }
 
-TimerHandle_t healthCheckTimer = xTimerCreate(
-    "healthCheckTimer",             // Timer name
-    100 / portTICK_PERIOD_MS,       // 100ms period
-    pdTRUE,                         // Auto-reload (periodic timer)
-    NULL,                           // Timer ID
-    health_check_callback                   // Callback function
-);
+static TimerHandle_t healthCheckTimer = NULL;
 
 /*
  * Run recurring calculations
@@ -102,13 +96,7 @@ void calculations_callback(TimerHandle_t xTimer) {
     // TODO : range estimate
 }
 
-TimerHandle_t calculationsTimer = xTimerCreate(
-    "calculationsTimer",            // Timer name
-    1000 / portTICK_PERIOD_MS,      // 1ms period
-    pdTRUE,                         // Auto-reload (periodic timer)
-    NULL,                           // Timer ID
-    calculations_callback            // Callback function
-);
+static TimerHandle_t calculationsTimer = NULL;
 
 
 //// ----
@@ -170,13 +158,7 @@ void send_limits_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&limitsFrame, false);
 }
 
-TimerHandle_t limitsMessageTimer = xTimerCreate(
-    "limitsMessageTimer",           // Timer name
-    1000 / portTICK_PERIOD_MS,      // 1s period
-    pdTRUE,                         // Auto-reload (periodic timer)
-    NULL,                           // Timer ID
-    send_limits_message_callback    // Callback function
-);
+static TimerHandle_t limitsMessageTimer = NULL;
 
 
 /*
@@ -269,13 +251,7 @@ void send_bms_state_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&bmsStateFrame, true);
 }
 
-TimerHandle_t bmsStateMessageTimer = xTimerCreate(
-    "bmsStateMessageTimer",          // Timer name
-    1000 / portTICK_PERIOD_MS,       // 1s period
-    pdTRUE,                          // Auto-reload (periodic timer)
-    NULL,                            // Timer ID
-    send_bms_state_message_callback  // Callback function
-);
+static TimerHandle_t bmsStateMessageTimer = NULL;
 
 
 /*
@@ -310,13 +286,7 @@ void send_module_liveness_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&moduleLivenessFrame, true);
 }
 
-TimerHandle_t moduleLivenessMessageTimer = xTimerCreate(
-    "moduleLivenessMessageTimer",    // Timer name
-    5000 / portTICK_PERIOD_MS,       // 5s period
-    pdTRUE,                          // Auto-reload (periodic timer)
-    NULL,                            // Timer ID
-    send_module_liveness_message_callback  // Callback function
-);
+static TimerHandle_t moduleLivenessMessageTimer = NULL;
 
 /*
  * Main CAN bus tx/rx error counters message 0x354
@@ -343,13 +313,7 @@ void send_main_can_error_counters_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&mainCanErrorCountersFrame, false);
 }
 
-TimerHandle_t mainCanErrorCountersMessageTimer = xTimerCreate(
-    "mainCanErrorCountersMessageTimer",            // Timer name
-    1000 / portTICK_PERIOD_MS,                     // 1s period
-    pdTRUE,                                        // Auto-reload (periodic timer)
-    NULL,                                          // Timer ID
-    send_main_can_error_counters_message_callback  // Callback function
-);
+static TimerHandle_t mainCanErrorCountersMessageTimer = NULL;
 
 
 /*
@@ -383,13 +347,7 @@ void send_soc_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&socFrame, false);
 }
 
-TimerHandle_t sendSocMessageTimer = xTimerCreate(
-    "sendSocMessageTimer",            // Timer name
-    1000 / portTICK_PERIOD_MS,                     // 1s period
-    pdTRUE,                                        // Auto-reload (periodic timer)
-    NULL,                                          // Timer ID
-    send_soc_message_callback             // Callback function
-);
+static TimerHandle_t sendSocMessageTimer = NULL;
 
 /*
  * Status message 0x356
@@ -424,13 +382,7 @@ void send_status_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&statusFrame, false);
 }
 
-TimerHandle_t sendStatusMessageTimer = xTimerCreate(
-    "sendStatusMessageTimer",            // Timer name
-    1000 / portTICK_PERIOD_MS,                     // 1s period
-    pdTRUE,                                        // Auto-reload (periodic timer)
-    NULL,                                          // Timer ID
-    send_status_message_callback             // Callback function
-);
+static TimerHandle_t sendStatusMessageTimer = NULL;
 
 /*
  * Pack CAN bus tx/rx error counters message 0x357
@@ -460,13 +412,7 @@ void send_pack_can_error_counters_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&packCanErrorCountersFrame, false);
 }
 
-TimerHandle_t sendPackCanErrorCountersMessageTimer = xTimerCreate(
-    "sendPackCanErrorCountersMessageTimer",            // Timer name
-    1000 / portTICK_PERIOD_MS,                     // 1s period
-    pdTRUE,                                        // Auto-reload (periodic timer)
-    NULL,                                          // Timer ID
-    send_pack_can_error_counters_message_callback             // Callback function
-);
+static TimerHandle_t sendPackCanErrorCountersMessageTimer = NULL;
 
 /*
  * Alarms message 0x35A
@@ -575,13 +521,7 @@ void send_alarm_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&alarmFrame, false);
 }
 
-TimerHandle_t sendAlarmMessageTimer = xTimerCreate(
-    "sendAlarmMessageTimer",            // Timer name
-    1000 / portTICK_PERIOD_MS,                     // 1s period
-    pdTRUE,                                        // Auto-reload (periodic timer)
-    NULL,                                          // Timer ID
-    send_alarm_message_callback             // Callback function
-);
+static TimerHandle_t sendAlarmMessageTimer = NULL;
 
 
 //// ----
@@ -671,13 +611,7 @@ void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
     }
 }
 
-TimerHandle_t handleMainCanMessageTimer = xTimerCreate(
-    "handleMainCanMessageTimer",       // Timer name
-    5 / portTICK_PERIOD_MS,            // 5ms period
-    pdTRUE,                            // Auto-reload (periodic timer)
-    NULL,                              // Timer ID
-    handle_main_CAN_messages_callback  // Callback function
-);
+static TimerHandle_t handleMainCanMessageTimer = NULL;
 
 
 
@@ -722,30 +656,22 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
  */
 void Bms::start() {
     printf("[bms][start] enabling CAN message handlers\n");
-    // limits (out)
-    start_timer(limitsMessageTimer, "limitsMessageTimer");
-    // bms state (out)
-    start_timer(bmsStateMessageTimer, "bmsStateMessageTimer");
-    // module liveness (out)
-    start_timer(moduleLivenessMessageTimer, "moduleLivenessMessageTimer");
-    // main can error counters (out)
-    start_timer(mainCanErrorCountersMessageTimer, "mainCanErrorCountersMessageTimer");
-    // pack can error counters (out)
-    start_timer(sendPackCanErrorCountersMessageTimer, "sendPackCanErrorCountersMessageTimer");
-    // soc (out)
-    start_timer(sendSocMessageTimer, "sendSocMessageTimer");
-    // status (out)
-    start_timer(sendStatusMessageTimer, "sendStatusMessageTimer");
-    // Alarms (out)
-    start_timer(sendAlarmMessageTimer, "sendAlarmMessageTimer");
-    // main CAN (in)
-    start_timer(handleMainCanMessageTimer, "handleMainCanMessageTimer");
+    // outbound periodic messages
+    limitsMessageTimer                   = create_and_start_timer("limitsMessage",         1000, send_limits_message_callback);
+    bmsStateMessageTimer                 = create_and_start_timer("bmsStateMessage",        1000, send_bms_state_message_callback);
+    moduleLivenessMessageTimer           = create_and_start_timer("moduleLiveness",         5000, send_module_liveness_message_callback);
+    mainCanErrorCountersMessageTimer     = create_and_start_timer("mainCanErrCounters",     1000, send_main_can_error_counters_message_callback);
+    sendPackCanErrorCountersMessageTimer = create_and_start_timer("packCanErrCounters",     1000, send_pack_can_error_counters_message_callback);
+    sendSocMessageTimer                  = create_and_start_timer("socMessage",             1000, send_soc_message_callback);
+    sendStatusMessageTimer               = create_and_start_timer("statusMessage",          1000, send_status_message_callback);
+    sendAlarmMessageTimer                = create_and_start_timer("alarmMessage",           1000, send_alarm_message_callback);
+    // inbound main CAN
+    handleMainCanMessageTimer            = create_and_start_timer("mainCanRx",                 5, handle_main_CAN_messages_callback);
+    // periodic work
+    healthCheckTimer                     = create_and_start_timer("healthCheck",             100, health_check_callback);
+    calculationsTimer                    = create_and_start_timer("calculations",           1000, calculations_callback);
     // status light
-    start_timer(processLedBlinkTimer, "processLedBlinkTimer");
-    // health checks
-    start_timer(healthCheckTimer, "healthCheckTimer");
-    // calculations
-    start_timer(calculationsTimer, "calculationsTimer");
+    statuslight_start_blink_timer();
 }
 
 void Bms::set_state(State newState, std::string reason) {
@@ -780,6 +706,13 @@ State Bms::get_state() {
 }
 
 void Bms::send_event(Event event) {
+    /* `state` is null until init() runs. Nothing should reach here before then
+     * (timers and interrupts are both started afterwards), but dispatching
+     * through a null function pointer is not a failure mode worth risking. */
+    if ( state == nullptr ) {
+        printf("[bms][send_event] WARNING event %d dropped, state machine not started\n", (int)event);
+        return;
+    }
     state(event);
 }
 

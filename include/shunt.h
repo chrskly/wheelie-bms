@@ -24,15 +24,17 @@
 
 class Shunt {
     private:
-        uint64_t lastHeartbeat;  // get_clock_ms() when we last got an update from the ISA Shunt
-        int32_t amps;
-        int32_t voltage1;
-        int32_t voltage2;
-        int32_t voltage3;
-        int32_t temperature;
-        int32_t watts;
-        int32_t ampSeconds;
-        int32_t wattHours;
+        /* lastHeartbeat starts at 0, so the shunt reads as alive for the first
+         * SHUNT_TTL_MS after boot and then dead until it actually reports. */
+        uint64_t lastHeartbeat = 0;  // get_clock_ms() when we last got an update from the ISA Shunt
+        int32_t amps = 0;
+        int32_t voltage1 = 0;
+        int32_t voltage2 = 0;
+        int32_t voltage3 = 0;
+        int32_t temperature = 0;
+        int32_t watts = 0;
+        int32_t ampSeconds = 0;
+        int32_t wattHours = 0;
     public:
         Shunt();
         void heartbeat();

@@ -30,20 +30,20 @@ class Io;
 class Battery {
    private:
       BatteryPack packs[NUM_PACKS];
-      int numPacks;                            // Number of battery packs in this battery
-      uint32_t voltage;                        // Total voltage of whole battery
-      uint16_t lowestCellVoltage;              // Voltage of cell with lowest voltage across whole battery
-      uint16_t activePacks_lowestCellVoltage;  // Voltage of cell with lowest voltage across packs that are not inhibited
-      uint16_t highestCellVoltage;             // Voltage of cell with highest voltage across whole battery
-      uint16_t activePacks_highestCellVoltage; // Voltage of cell with highest voltage across packs that are not inhibited
-      uint32_t minimumBatteryVoltage;          // Lowest permitted voltage of the whole battery
-      uint32_t maximumBatteryVoltage;          // Highest permitted voltage of the whole battery
-      uint8_t cellDelta;                       // FIXME todo
-      float lowestSensorTemperature;           //
-      float highestSensorTemperature;          //
-      Bms* bms;
+      int numPacks = NUM_PACKS;                // Number of battery packs in this battery
+      uint32_t voltage = 0;                    // Total voltage of whole battery
+      uint16_t lowestCellVoltage = 0;          // Voltage of cell with lowest voltage across whole battery
+      uint16_t activePacks_lowestCellVoltage = 0;  // Lowest cell voltage across packs that are not inhibited
+      uint16_t highestCellVoltage = 0;         // Voltage of cell with highest voltage across whole battery
+      uint16_t activePacks_highestCellVoltage = 0; // Highest cell voltage across packs that are not inhibited
+      uint32_t minimumBatteryVoltage = 0;      // Lowest permitted voltage of the whole battery
+      uint32_t maximumBatteryVoltage = 0;      // Highest permitted voltage of the whole battery
+      uint8_t cellDelta = 0;                   // FIXME todo
+      float lowestSensorTemperature = 0;       //
+      float highestSensorTemperature = 0;      //
+      Bms* bms = nullptr;
       // mutex_t* canMutex;
-      Io* io;
+      Io* io = nullptr;
 
    public:
       Battery() {};

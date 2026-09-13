@@ -21,6 +21,7 @@
 
 #include "bms.h"
 #include "led.h"
+#include "util.h"
 
 
 void process_led_blink_step(TimerHandle_t xTimer) {
@@ -29,13 +30,11 @@ void process_led_blink_step(TimerHandle_t xTimer) {
     bms.led_blink();
 }
 
-TimerHandle_t processLedBlinkTimer = xTimerCreate(
-    "processLedBlinkTimer",         // Timer name
-    100 / portTICK_PERIOD_MS,       // 100ms period
-    pdTRUE,                         // Auto-reload (periodic timer)
-    NULL,                           // Timer ID
-    process_led_blink_step          // Callback function
-);
+static TimerHandle_t processLedBlinkTimer = NULL;
+
+void statuslight_start_blink_timer() {
+    processLedBlinkTimer = create_and_start_timer("ledBlink", 100, process_led_blink_step);
+}
 
 StatusLight::StatusLight(Bms* _bms) {
     on = false;

@@ -25,9 +25,10 @@
 
 class Bms;
 
-/* Defined in led.cpp. Started by Bms::start(); it was previously created and
- * then never started, so the status light never blinked. */
-extern TimerHandle_t processLedBlinkTimer;
+/* Creates and starts the LED blink timer. Called from Bms::start(). The timer
+ * used to be created at global static-init time and then never started, so the
+ * status light never blinked. */
+void statuslight_start_blink_timer();
 
 enum LED_MODE {
     STANDBY,
@@ -38,11 +39,11 @@ enum LED_MODE {
 
 class StatusLight {
     private:
-        bool on;
-        int counter;
-        int onDuration;
-        int offDuration;
-        Bms* bms;
+        bool on = false;
+        int counter = 0;
+        int onDuration = 0;
+        int offDuration = 0;
+        Bms* bms = nullptr;
 
     public:
         StatusLight() {};

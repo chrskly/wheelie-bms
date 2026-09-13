@@ -26,11 +26,14 @@ class Bms;
 
 class Io {
     private:
-        Bms* bms;
+        Bms* bms = nullptr;
         // Inputs
-        bool ignitionOn;
-        bool chargeEnable;             // Charger is asking to charge
-        int lastInterrupt;
+        bool ignitionOn = false;
+        bool chargeEnable = false;     // Charger is asking to charge
+        /* NOTE: lastInterrupt is still written nowhere and read nowhere. It is
+         * initialised here so it is at least deterministic; deciding whether it
+         * earns its place belongs with the output-state rework (B115). */
+        int lastInterrupt = 0;
     public:
         Io() {};
         /* Configure pins. Safe to call before the rest of the system exists. */

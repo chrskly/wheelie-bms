@@ -25,16 +25,22 @@
 
 class BatteryPack;
 
+/* Default initialisers on every member: BatteryModule is default-constructed
+ * as part of BatteryPack's array long before init() runs on it. */
 class BatteryModule {
    private:
-      int id;
-      int numCells;                              // Number of cells in this module
-      int numTemperatureSensors;                 // Number of temperature sensors in this module
+      int id = -1;
+      int numCells = 0;                          // Number of cells in this module
+      int numTemperatureSensors = 0;             // Number of temperature sensors in this module
+      /* Both arrays are filled over their FULL extent by the constructor, not by
+       * a default member initialiser: `= { -127 }` would set only element 0 and
+       * value-initialise the rest to 0, and 0 is a perfectly plausible
+       * temperature that the getters would treat as a real reading. */
       uint16_t cellVoltage[CELLS_PER_MODULE];    // Voltages of each cell, stored in mV
-      int8_t cellTemperature[TEMPS_PER_MODULE];  // Temperatures of each cell
-      bool allModuleDataPopulated;               // True when we have voltage/temp information for all cells
-      uint64_t lastHeartbeat;                    // get_clock_ms() when we last got an update from this module
-      BatteryPack* pack;                         // The parent BatteryPack that contains this module
+      int8_t cellTemperature[TEMPS_PER_MODULE];  // Temperatures of each cell (-127 == no reading yet)
+      bool allModuleDataPopulated = false;       // True when we have voltage/temp information for all cells
+      uint64_t lastHeartbeat = 0;                // get_clock_ms() when we last got an update from this module
+      BatteryPack* pack = nullptr;               // The parent BatteryPack that contains this module
 
    public:
       BatteryModule();

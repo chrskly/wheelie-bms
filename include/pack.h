@@ -34,7 +34,7 @@ const uint8_t finalxor[12] = { 0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69, 0
 class BatteryPack {
 
    public:
-      int id;
+      int id = -1;
 
       BatteryPack();
       /* Initialise in place. Do NOT construct a temporary and copy-assign it:
@@ -102,31 +102,36 @@ class BatteryPack {
       uint16_t get_can_rx_error_count() { return canRxErrorCount; }
 
    private:
-      ACAN2515* CAN;                                    // CAN bus connection to this pack
-      Bms* bms;
+      /* Default initialisers on every member: BatteryPack is default-constructed
+       * as part of Battery's array long before init() runs on it, and several of
+       * these were read before init() ever assigned them. balanceStatus in
+       * particular gates every cell-voltage store in decode_voltages(), so
+       * garbage there silently discarded all voltage data. */
+      ACAN2515* CAN = nullptr;                         // CAN bus connection to this pack
+      Bms* bms = nullptr;
       //absolute_time_t lastUpdate;                      // Time we received last update from BMS
-      int numModules;                                  //
-      int numCellsPerModule;                           //
-      int numTemperatureSensorsPerModule;              //
-      Battery* battery;                                // The parent Battery that contains this BatteryPack
-      float voltage;                                   // Voltage of the total pack
-      uint8_t cellDelta;                               // Difference in voltage between high and low cell, in mV
+      int numModules = 0;                              //
+      int numCellsPerModule = 0;                       //
+      int numTemperatureSensorsPerModule = 0;          //
+      Battery* battery = nullptr;                      // The parent Battery that contains this BatteryPack
+      float voltage = 0.0f;                            // Voltage of the total pack
+      uint8_t cellDelta = 0;                           // Difference in voltage between high and low cell, in mV
 
       // contactors
-      int contactorInhibitPin;                         // Pin on the pico which controls contactors for this pack
-      int contactorFeedbackPin;                        // Pin on the pick where feedback from the contactors is read
+      int contactorInhibitPin = -1;                    // Pin which controls contactors for this pack
+      int contactorFeedbackPin = -1;                   // Pin where feedback from the contactors is read
 
-      uint32_t balanceStatus;                          // Status of the balance of the pack
-      uint32_t errorStatus;                            //
-      bool balancingEnabled;                           //
+      uint32_t balanceStatus = 0;                      // Status of the balance of the pack
+      uint32_t errorStatus = 0;                        //
+      bool balancingEnabled = false;                   //
       //absolute_time_t nextBalanceTime;                 // Time that the next balance should occur.
-      uint8_t pollMessageId;                           //
-      bool initialised;                                //
+      uint8_t pollMessageId = 0;                       //
+      bool initialised = false;                        //
       BatteryModule modules[MODULES_PER_PACK];         // The child modules that make up this BatteryPack
       CRC8 crc8;
 
-      bool inStartup;
-      uint8_t modulePollingCycle;
+      bool inStartup = true;
+      uint8_t modulePollingCycle = 0;
       CANMessage pollModuleFrame;
 
       uint8_t dischargeCurve[50] = {
@@ -152,12 +157,12 @@ class BatteryPack {
          50, 50, 50, 50,  // 36° to 39°
       };
 
-      uint64_t lastTemperatureSampleTime;
-      int8_t lastTemperatureSample;
-      int8_t temperatureDelta;
+      uint64_t lastTemperatureSampleTime = 0;
+      int8_t lastTemperatureSample = 0;
+      int8_t temperatureDelta = 0;
 
-      int16_t canTxErrorCount;
-      int16_t canRxErrorCount;
+      int16_t canTxErrorCount = 0;
+      int16_t canRxErrorCount = 0;
 };
 
 #endif  // BMS_SRC_INCLUDE_PACK_H_

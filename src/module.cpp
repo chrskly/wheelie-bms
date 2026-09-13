@@ -31,7 +31,17 @@
 #include "util.h"
 
 
-BatteryModule::BatteryModule() {}
+BatteryModule::BatteryModule() {
+    /* Fill the full extent of both arrays, so a module that is never init()ed
+     * (or one whose sensor count gets clamped) still reports "no reading"
+     * rather than a stale zero. */
+    for ( int c = 0; c < CELLS_PER_MODULE; c++ ) {
+        cellVoltage[c] = 0;
+    }
+    for ( int t = 0; t < TEMPS_PER_MODULE; t++ ) {
+        cellTemperature[t] = -127;
+    }
+}
 
 //
 void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTemperatureSensors) {
@@ -49,7 +59,7 @@ void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTem
         _numCells = 0;
     }
     numCells = _numCells;
-    for ( int c = 0; c < numCells; c++ ) {
+    for ( int c = 0; c < CELLS_PER_MODULE; c++ ) {
         cellVoltage[c] = 0;
     }
     // Initialise temperature sensor readings to zero
@@ -62,7 +72,7 @@ void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTem
         _numTemperatureSensors = 0;
     }
     numTemperatureSensors = _numTemperatureSensors;
-    for ( int t = 0; t < numTemperatureSensors; t++ ) {
+    for ( int t = 0; t < TEMPS_PER_MODULE; t++ ) {
         cellTemperature[t] = -127;
     }
     allModuleDataPopulated = false;

@@ -39,9 +39,14 @@ void zero_frame(CANMessage* frame);
 void print_frame(CANMessage* frame);
 
 /*
- * Start a FreeRTOS software timer, logging (rather than crashing) if the timer
- * failed to be created or could not be queued for starting.
+ * Create an auto-reload FreeRTOS software timer and start it, reporting failure
+ * rather than returning a handle nobody checks. Returns NULL on failure.
+ *
+ * Timers used to be created by global static initialisers, which runs them
+ * before setup() at a point where failure cannot be reported and the ordering
+ * between translation units is unspecified. They are now created from the
+ * explicit start() calls instead.
  */
-bool start_timer(TimerHandle_t timer, const char* name);
+TimerHandle_t create_and_start_timer(const char* name, uint32_t periodMs, TimerCallbackFunction_t callback);
 
 #endif

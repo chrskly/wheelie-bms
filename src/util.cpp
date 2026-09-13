@@ -45,15 +45,20 @@ void print_frame(CANMessage* frame) {
     printf("\n");
 }
 
-bool start_timer(TimerHandle_t timer, const char* name) {
+TimerHandle_t create_and_start_timer(const char* name, uint32_t periodMs, TimerCallbackFunction_t callback) {
+    if ( periodMs == 0 ) {
+        printf("[util] ERROR timer '%s' has a zero period\n", name);
+        return NULL;
+    }
+    TimerHandle_t timer = xTimerCreate(name, pdMS_TO_TICKS(periodMs), pdTRUE, NULL, callback);
     if ( timer == NULL ) {
-        printf("[util] ERROR timer '%s' was never created, cannot start it\n", name);
-        return false;
+        printf("[util] ERROR could not create timer '%s' (out of heap?)\n", name);
+        return NULL;
     }
     if ( xTimerStart(timer, 0) != pdPASS ) {
-        printf("[util] ERROR failed to start timer '%s'\n", name);
-        return false;
+        printf("[util] ERROR could not start timer '%s' (timer queue full?)\n", name);
+        return NULL;
     }
-    printf("[util] started timer '%s'\n", name);
-    return true;
+    printf("[util] timer '%s' running at %ums\n", name, (unsigned int)periodMs);
+    return timer;
 }

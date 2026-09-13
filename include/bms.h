@@ -54,30 +54,34 @@ enum InhibitReason {
     R_DEAD_CELL,
 };
 
+/* Every member below carries a default initialiser. These run for ANY
+ * constructor, including the defaulted one used for the global `bms` object,
+ * so a member cannot be left holding garbage if init() is not reached or if a
+ * new field is added later and someone forgets to assign it. */
 class Bms {
     private:
-        Battery* battery;                      //
-        State state;                           //
-        Io* io;                                //
-        Shunt* shunt;                          //
-        StatusLight statusLight;               //
-        uint16_t maxChargeCurrent;             // Tell the charger how much current it's allowed to push into the battery
-        uint16_t maxDischargeCurrent;          //
-        uint8_t soc;                           // State of charge of the battery
-        bool internalError;                    // 
-        bool watchdogReboot;                   //
-        uint64_t lastTimePackVoltagesMatched;  // get_clock_ms() when pack voltages last matched
-        struct CANMessage canFrame;             //
-        uint16_t invalidEventCounter;          // Count how many times the state machine has seen an invalid event
-        bool illegalStateTransition;           //
-        int8_t chargeInhibitReason;            //
-        int8_t driveInhibitReason;             //
-        bool posContactorWelded;               //
-        bool negContactorWelded;               //
-        bool packContactorsWelded[NUM_PACKS];  //
+        Battery* battery = nullptr;            //
+        State state = nullptr;                 // set by init(); send_event() refuses to run until then
+        Io* io = nullptr;                      //
+        Shunt* shunt = nullptr;                //
+        StatusLight statusLight;               // (has its own default initialisers)
+        uint16_t maxChargeCurrent = 0;         // Tell the charger how much current it's allowed to push into the battery
+        uint16_t maxDischargeCurrent = 0;      //
+        uint8_t soc = 0;                       // State of charge of the battery
+        bool internalError = false;            //
+        bool watchdogReboot = false;           //
+        uint64_t lastTimePackVoltagesMatched = 0;  // get_clock_ms() when pack voltages last matched
+        struct CANMessage canFrame;            //
+        uint16_t invalidEventCounter = 0;      // Count how many times the state machine has seen an invalid event
+        bool illegalStateTransition = false;   //
+        int8_t chargeInhibitReason = R_NONE;   //
+        int8_t driveInhibitReason = R_NONE;    //
+        bool posContactorWelded = false;       //
+        bool negContactorWelded = false;       //
+        bool packContactorsWelded[NUM_PACKS] = { false };  //
 
-        uint32_t canTxErrorCount;              // Track number of times we've failed to send a CAN message on the main bus
-        uint32_t canRxErrorCount;              // Track number of times we've failed to read a CAN message on the main bus
+        uint32_t canTxErrorCount = 0;          // Track number of times we've failed to send a CAN message on the main bus
+        uint32_t canRxErrorCount = 0;          // Track number of times we've failed to read a CAN message on the main bus
 
     public:
         Bms() {};

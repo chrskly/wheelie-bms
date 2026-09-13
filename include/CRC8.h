@@ -37,7 +37,7 @@ class CRC8 {
     void begin();
     crc get_crc8(uint8_t const message[], int nBytes, uint8_t final);
  private:
-    uint8_t crcTable[256];
+    uint8_t crcTable[256] = { 0 };
 };
 
 #endif  // BMS_SRC_INCLUDE_CRC8_H_

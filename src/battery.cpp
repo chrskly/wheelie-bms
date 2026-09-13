@@ -38,13 +38,7 @@ void poll_packs(TimerHandle_t xTimer) {
     battery.request_data();
 }
 
-TimerHandle_t pollPacksTimer = xTimerCreate(
-    "pollPacksTimer",          // Timer name
-    100 / portTICK_PERIOD_MS,  // 100ms period
-    pdTRUE,                    // Auto-reload (periodic timer)
-    NULL,                      // Timer ID
-    poll_packs                 // Callback function
-);
+static TimerHandle_t pollPacksTimer = NULL;
 
 /*
  * Handle inbound CAN messages from the battery.
@@ -55,13 +49,7 @@ void handle_inbound_CAN_messages(TimerHandle_t xTimer) {
     battery.read_message();
 }
 
-TimerHandle_t handleInboundCANMessagesTimer = xTimerCreate(
-    "handleInboundCANMessagesTimer",  // Timer name
-    5 / portTICK_PERIOD_MS,           // 5ms period
-    pdTRUE,                           // Auto-reload (periodic timer)
-    NULL,                             // Timer ID
-    handle_inbound_CAN_messages       // Callback function
-);
+static TimerHandle_t handleInboundCANMessagesTimer = NULL;
 
 
 // Create all battery packs and modules
@@ -95,8 +83,8 @@ void Battery::initialise(Io* _io, Bms* _bms) {
  */
 void Battery::start() {
     printf("[battery] Enabling polling of packs for data\n");
-    start_timer(pollPacksTimer, "pollPacksTimer");
-    start_timer(handleInboundCANMessagesTimer, "handleInboundCANMessagesTimer");
+    pollPacksTimer                = create_and_start_timer("pollPacks", 100, poll_packs);
+    handleInboundCANMessagesTimer = create_and_start_timer("packCanRx",   5, handle_inbound_CAN_messages);
 }
 
 //
@@ -243,7 +231,7 @@ void Battery::process_voltage_update() {
     recalculate_cell_delta();
     recalculate_lowest_cell_voltage();
     recalculate_highest_cell_voltage();
-    if ( !packs_are_imbalanced() ) {
+    if ( !packs_are_imbalanced() && bms != nullptr ) {
         this->bms->pack_voltages_match_heartbeat();
     }
 }
@@ -273,7 +261,9 @@ void Battery::recalculate_lowest_cell_voltage() {
          newLowestCellVoltage > CELL_FULL_VOLTAGE  ||
          activePacks_newLowestCellVoltage < CELL_EMPTY_VOLTAGE ||
          activePacks_newLowestCellVoltage > CELL_FULL_VOLTAGE ) {
-        bms->set_internal_error();
+        if ( bms != nullptr ) {
+            bms->set_internal_error();
+        }
     }
     lowestCellVoltage = newLowestCellVoltage;
     activePacks_lowestCellVoltage = activePacks_newLowestCellVoltage;
@@ -318,7 +308,9 @@ void Battery::recalculate_highest_cell_voltage() {
          newHighestCellVoltage > CELL_FULL_VOLTAGE ||
          activePacks_newHighestCellVoltage < CELL_EMPTY_VOLTAGE ||
          activePacks_newHighestCellVoltage > CELL_FULL_VOLTAGE ) {
-        bms->set_internal_error();
+        if ( bms != nullptr ) {
+            bms->set_internal_error();
+        }
     }
     highestCellVoltage = newHighestCellVoltage;
     activePacks_highestCellVoltage = activePacks_newHighestCellVoltage;
@@ -427,7 +419,9 @@ void Battery::update_highest_sensor_temperature() {
     }
     // Saftey check
     if ( newHighestSensorTemperature < -20 || newHighestSensorTemperature > 50 ) {
-        bms->set_internal_error();
+        if ( bms != nullptr ) {
+            bms->set_internal_error();
+        }
     }
     this->highestSensorTemperature = newHighestSensorTemperature;
 }
@@ -450,7 +444,9 @@ void Battery::update_lowest_sensor_temperature() {
     }
     // Safety check
     if ( newLowestSensorTemperature < -20 || newLowestSensorTemperature > 50 ) {
-        this->bms->set_internal_error();
+        if ( bms != nullptr ) {
+            this->bms->set_internal_error();
+        }
     }
     this->lowestSensorTemperature = newLowestSensorTemperature;
 }
