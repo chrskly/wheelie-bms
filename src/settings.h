@@ -286,6 +286,11 @@ static_assert(every_pin_is_unique(),
 #define MODULE_CMD_BALANCE_ON  0x48
 #define MODULE_CMD_BALANCE_OFF 0x40
 
+/* Give up heating after this long. A heater that cannot bring the pack up to
+ * the minimum charge temperature within this window is not working, and sitting
+ * in batteryHeating indefinitely means running it with no end condition. */
+#define BATTERY_HEATING_TIMEOUT_MS 1800000          // 30 minutes
+
 /* Hardware watchdog. The worker task must check in at least this often or the
  * chip resets. Set to 0 to disable. */
 #define WATCHDOG_TIMEOUT_S 5

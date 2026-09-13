@@ -32,6 +32,7 @@
 
 
 enum InternalErrorSource {
+    IE_HEATER_INEFFECTIVE = 1 << 4,   // heating ran too long, or ran without usable temperature data
     IE_LOW_CELL_RANGE  = 1 << 0,   // lowest cell voltage outside the plausible range
     IE_HIGH_CELL_RANGE = 1 << 1,   // highest cell voltage outside the plausible range
     IE_LOW_TEMP_RANGE  = 1 << 2,   // lowest sensor temperature outside the plausible range
@@ -77,6 +78,7 @@ class Bms {
         uint8_t internalErrorFlags = 0;        // bitmask of InternalErrorSource
         bool watchdogReboot = false;           //
         uint64_t lastTimePackVoltagesMatched = 0;  // get_clock_ms() when pack voltages last matched
+        uint64_t stateEnteredAt = 0;           // get_clock_ms() when the current state was entered
         struct CANMessage canFrame;            //
         uint16_t invalidEventCounter = 0;      // Count how many times the state machine has seen an invalid event
         bool illegalStateTransition = false;   //
@@ -107,6 +109,8 @@ class Bms {
         // State and events
         void set_state(State _state, std::string reason);
         State get_state();
+        // How long we have been in the current state, in milliseconds
+        uint64_t time_in_state_ms();
         void send_event(Event event);
         void print();
 

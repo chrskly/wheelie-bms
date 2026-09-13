@@ -32,10 +32,66 @@
 /*
  * Perform all health checks.
  */
+/*
+ * Withdraw inhibit reasons whose underlying condition no longer holds.
+ *
+ * Reasons are applied by the state handlers, but each was only ever withdrawn by
+ * the particular states that knew about it. An exit path that did not know to
+ * withdraw one left it latched with no route back: R_TOO_HOT, for instance, was
+ * withdrawn only inside state_overTempFault's E_TEMPERATURE_OK branch, so every
+ * other way of leaving that state held DRIVE_INHIBIT and CHARGE_INHIBIT on for
+ * the rest of the session.
+ *
+ * Reconciling against live conditions here makes the masks self-healing however
+ * a state was left. It runs BEFORE events are dispatched, so a state that still
+ * requires an inhibit simply re-asserts it in its own safety block -- being in
+ * overTempFault still holds R_TOO_HOT, this only clears it once we have left.
+ */
+static void reconcile_inhibit_reasons() {
+    extern Bms bms;
+    extern Battery battery;
+    extern Shunt shunt;
+
+    if ( !battery.too_hot() ) {
+        bms.disable_drive_inhibit("[RC] not too hot", R_TOO_HOT);
+        bms.disable_charge_inhibit("[RC] not too hot", R_TOO_HOT);
+    }
+    if ( !battery.too_cold_to_charge() ) {
+        bms.disable_charge_inhibit("[RC] not too cold", R_TOO_COLD);
+    }
+    if ( !battery.has_full_cell() ) {
+        bms.disable_charge_inhibit("[RC] not full", R_BATTERY_FULL);
+    }
+    if ( !battery.has_empty_cell() ) {
+        bms.disable_drive_inhibit("[RC] not empty", R_BATTERY_EMPTY);
+    }
+    if ( !bms.charge_is_enabled() ) {
+        // Drive-away protection only applies while a charge is actually requested
+        bms.disable_drive_inhibit("[RC] no charge requested", R_CHARGING);
+    }
+    if ( battery.is_alive() ) {
+        bms.disable_charge_inhibit("[RC] modules responsive", R_MODULE_UNRESPONSIVE);
+        bms.disable_drive_inhibit("[RC] modules responsive", R_MODULE_UNRESPONSIVE);
+    }
+    if ( !shunt.is_dead() ) {
+        bms.disable_charge_inhibit("[RC] shunt responsive", R_SHUNT_UNRESPONSIVE);
+        bms.disable_drive_inhibit("[RC] shunt responsive", R_SHUNT_UNRESPONSIVE);
+    }
+    if ( !bms.get_illegal_state_transition() ) {
+        bms.disable_drive_inhibit("[RC] no illegal transition", R_ILLEGAL_STATE_TRANSITION);
+        bms.disable_charge_inhibit("[RC] no illegal transition", R_ILLEGAL_STATE_TRANSITION);
+    }
+    /* R_CRITICAL_FAULT and R_STARTUP are deliberately NOT reconciled here:
+     * criticalFault withdraws its own on exit, and R_STARTUP is withdrawn below
+     * once the battery reports. */
+}
+
 void health_check_callback() {
     extern Bms bms;
     extern Battery battery;
     extern Shunt shunt;
+
+    reconcile_inhibit_reasons();
 
     /* Weld detection runs every cycle regardless of state. It used to be called
      * only from state_standby, so a contactor that welded during drive or
@@ -765,6 +821,7 @@ void Bms::start() {
 }
 
 void Bms::set_state(State newState, std::string reason) {
+    stateEnteredAt = get_clock_ms();
     std::string oldStateName = get_state_name(state);
     std::string newStateName = get_state_name(newState);
     printf("[bms][set_state] switching from state %s to state %s, reason : %s\n", oldStateName.c_str(), newStateName.c_str(), reason.c_str());
@@ -793,6 +850,10 @@ void Bms::set_state(State newState, std::string reason) {
 
 State Bms::get_state() {
     return state;
+}
+
+uint64_t Bms::time_in_state_ms() {
+    return get_clock_ms() - stateEnteredAt;
 }
 
 void Bms::send_event(Event event) {
