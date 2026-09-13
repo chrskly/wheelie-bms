@@ -34,9 +34,6 @@ StatusLight::StatusLight(Bms* _bms) {
 
     // Set up the LED pin
     pinMode(LED_PIN, OUTPUT);
-
-    // timer to handle the on-ing and off-ing of the LED
-    // add_repeating_timer_ms(100, process_led_blink_step, static_cast<void*>(&bms), &ledBlinkTimer);
 }
 
 

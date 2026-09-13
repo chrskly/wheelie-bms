@@ -31,15 +31,6 @@
 #include "util.h"
 
 
-bool send_limits_message(struct repeating_timer *t);
-bool send_bms_state_message(struct repeating_timer *t);
-bool send_module_liveness_message(struct repeating_timer *t);
-bool send_soc_message(struct repeating_timer *t);
-bool send_status_message(struct repeating_timer *t);
-bool send_alarm_message(struct repeating_timer *t);
-bool handle_main_CAN_messages(struct repeating_timer *t);
-bool check_liveness(struct repeating_timer *t);
-
 enum InternalErrorSource {
     IE_LOW_CELL_RANGE  = 1 << 0,   // lowest cell voltage outside the plausible range
     IE_HIGH_CELL_RANGE = 1 << 1,   // highest cell voltage outside the plausible range
@@ -120,6 +111,7 @@ class Bms {
 
         // Watchdog
         void set_watchdog_reboot(bool value);
+        bool get_watchdog_reboot() { return watchdogReboot; }
 
         /* DRIVE_INHIBIT / CHARGE_INHIBIT.
          *

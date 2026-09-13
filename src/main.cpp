@@ -26,6 +26,7 @@ EV Mustang BMS
 #include <Arduino.h>
 #include <SPI.h>
 #include <stdio.h>
+#include <esp_system.h>
 
 #include "battery.h"
 #include "bms.h"
@@ -37,40 +38,10 @@ EV Mustang BMS
 #include "util.h"
 
 
-// mutex_t canMutex;
 Io io;
 Shunt shunt;
 Battery battery;
 Bms bms;
-
-
-// Watchdog
-
-// struct repeating_timer watchdogKeepaliveTimer;
-
-// bool watchdog_keepalive(struct repeating_timer *t) {
-//     watchdog_update();
-//     return true;
-// }
-
-// void enable_watchdog_keepalive() {
-//     add_repeating_timer_ms(1000, watchdog_keepalive, NULL, &watchdogKeepaliveTimer);
-// }
-
-// Status print
-
-// struct repeating_timer statusPrintTimer;
-
-// bool status_print(struct repeating_timer *t) {
-//     extern Bms bms;
-//     bms.print();
-//     return true;
-// }
-
-// void enable_status_print() {
-//     printf(" * Enabling status print\n");
-//     add_repeating_timer_ms(1000, status_print, NULL, &statusPrintTimer);
-// }
 
 
 /*
@@ -112,17 +83,16 @@ void setup() {
     printf("BMS starting up ...\n");
 
     // Check for unexpected reboot
-    // if (watchdog_caused_reboot()) {
-    //     printf(" * !!!! Rebooted by Watchdog !!!!\n");
-    //     bms.set_watchdog_reboot(true);
-    // } else {
-    //     printf(" * Clean boot\n");
-    //     bms.set_watchdog_reboot(false);
-    // }
-    // watchdog_enable(5000, 1);
-    // enable_watchdog_keepalive();
-
-    // mutex_init(&canMutex);
+    const esp_reset_reason_t resetReason = esp_reset_reason();
+    const bool rebootedByWatchdog = ( resetReason == ESP_RST_TASK_WDT ||
+                                      resetReason == ESP_RST_INT_WDT  ||
+                                      resetReason == ESP_RST_WDT );
+    if ( rebootedByWatchdog ) {
+        printf(" * !!!! Rebooted by Watchdog (reset reason %d) !!!!\n", (int)resetReason);
+    } else {
+        printf(" * Clean boot (reset reason %d)\n", (int)resetReason);
+    }
+    bms.set_watchdog_reboot(rebootedByWatchdog);
 
     // Oscillator for the pack CAN controllers. Must be running before they init.
     start_can_clock();
@@ -134,7 +104,7 @@ void setup() {
 
     /* Initialisation order matters, and getting it wrong is what most of the
      * startup bugs were:
-     *   1. io.init()             - pins only, no interrupts yet
+     *   1. io.init()             - configure pins and seed the debounced inputs
      *   2. battery.initialise()  - builds packs in place (needs SPI + CAN clock)
      *   3. bms.init()            - main CAN port, needs a built battery
      *   4. bms.start()           - starts the single worker task that runs all
@@ -144,20 +114,18 @@ void setup() {
      * assign a freshly-built temporary over them, because Bms, BatteryPack and
      * BatteryModule all hand out pointers to `this`. */
     io.init();
-    battery.initialise(&io, &bms);
+    battery.initialise(&bms);
     bms.init(&battery, &io, &shunt);
 
     bms.start();
-
-    // enable_status_print();
 
     printf("---- BMS READY ----\n");
 }
 
 
 void loop() {
-    /* All work happens in FreeRTOS timer callbacks. Yield rather than spinning:
-     * a bare `while (true) {}` here starves the idle task on this core and the
-     * task watchdog reboots the board. */
+    /* All work happens in the BMS worker task started by bms.start(). Yield
+     * rather than spinning: a bare `while (true) {}` here starves the idle task
+     * on this core and the task watchdog reboots the board. */
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 }

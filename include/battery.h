@@ -21,10 +21,14 @@
 #define BMS_SRC_INCLUDE_BATTERY_H_
 
 #include "pack.h"
-#include "bms.h"
 #include "settings.h"
 
-
+/* Deliberately does NOT include bms.h. bms.h includes this header, so including
+ * it back created a cycle that only compiled because pack.h happens to
+ * forward-declare Bms and happens to be included first -- reordering these two
+ * lines broke the build. Battery only needs a pointer to Bms, so a forward
+ * declaration is enough; battery.cpp includes bms.h for the definition. */
+class Bms;
 class Io;
 
 class Battery {
@@ -38,7 +42,6 @@ class Battery {
       uint16_t activePacks_highestCellVoltage = 0; // Highest cell voltage across packs that are not inhibited
       uint32_t minimumBatteryVoltage = 0;      // Lowest permitted voltage of the whole battery
       uint32_t maximumBatteryVoltage = 0;      // Highest permitted voltage of the whole battery
-      uint16_t cellDelta = 0;                  // Largest cell delta of any pack, in mV
       float lowestSensorTemperature = 0;       //
       float highestSensorTemperature = 0;      //
       /* Latched threshold results, updated in process_temperature_update().
@@ -47,8 +50,6 @@ class Battery {
       bool tooHotLatched = false;
       bool tooColdToChargeLatched = false;
       Bms* bms = nullptr;
-      // mutex_t* canMutex;
-      Io* io = nullptr;
 
    public:
       Battery() {};
@@ -57,12 +58,11 @@ class Battery {
        *     the packs must be built in place, never copy-assigned);
        *   the BMS worker task begins polling. Nothing may run periodically
        *     until every pack exists and `bms` is set. */
-      void initialise(Io* _io, Bms* _bms);
+      void initialise(Bms* _bms);
       int print();
 
       void request_data();
       void read_message();
-      void send_test_message();
       bool has_multiple_packs();
       uint8_t number_of_active_packs();
       uint16_t get_can_tx_error_count_for_pack(int packId) { return packs[packId].get_can_tx_error_count(); }
@@ -72,7 +72,6 @@ class Battery {
       uint32_t get_voltage();
       void set_voltage(uint32_t voltage) { this->voltage = voltage; }
       void recalculate_voltage();
-      void recalculate_cell_delta();
       uint32_t get_max_voltage();
       uint32_t get_min_voltage();
       int get_index_of_high_pack();
@@ -85,7 +84,6 @@ class Battery {
       uint16_t get_highest_cell_voltage();
       bool has_full_cell();
       uint32_t voltage_delta_between_packs();
-      BatteryPack* get_pack_with_highest_voltage();
       bool packs_are_imbalanced();
       uint16_t get_cell_delta();
       bool has_dead_cell();

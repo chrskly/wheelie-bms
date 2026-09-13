@@ -81,9 +81,6 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
         }
     }
 
-    // Set last update time to now
-    //lastUpdate = get_absolute_time();
-
     voltage = 0.0000f;
     cellDelta = 0;
 
@@ -99,9 +96,6 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
     // Set up contactor feedback
     contactorFeedbackPin = _contactorFeedbackPin;
     pinMode(contactorFeedbackPin, INPUT);
-
-    // Set next balance time to 10 seconds from now
-    //nextBalanceTime = delayed_by_us(get_absolute_time(), 10000);
 
     inStartup = true;
     modulePollingCycle = 0;
@@ -403,7 +397,7 @@ bool BatteryPack::has_full_cell() {
 }
 
 // Update the value for the voltage of an individual cell in a pack
-void BatteryPack::set_cell_voltage(int moduleId, int cellIndex, uint32_t newCellVoltage) {
+void BatteryPack::set_cell_voltage(int moduleId, int cellIndex, uint16_t newCellVoltage) {
     modules[moduleId].set_cell_voltage(cellIndex, newCellVoltage);
 }
 
@@ -672,17 +666,17 @@ int16_t BatteryPack::get_max_discharge_current() {
  * -126 / 126 sentinels the temperature getters return before any module data
  * has arrived. The three call sites below used to index the array directly
  * with no range check at all. */
-int16_t BatteryPack::charge_current_for_temperature(int8_t temperature) {
+uint16_t BatteryPack::charge_current_for_temperature(int8_t temperature) {
     const int index = (int)temperature + 10;
     const int entries = (int)(sizeof(chargeCurrentMax) / sizeof(chargeCurrentMax[0]));
     if ( index < 0 || index >= entries ) {
         return 0;
     }
-    return (int16_t)chargeCurrentMax[index];
+    return (uint16_t)chargeCurrentMax[index];
 }
 
 /* Returns the maximum charge current as a function of pack temperature. */
-int16_t BatteryPack::get_max_charge_current_by_temperature() {
+uint16_t BatteryPack::get_max_charge_current_by_temperature() {
     // Safety checks first
     if ( has_full_cell() ) {
         return 0;
@@ -719,7 +713,7 @@ int16_t BatteryPack::get_max_charge_current_by_temperature() {
                  * always zero. It also had the wrong shape: the intent is
                  * 1 - 0.1*excess, not (10 - excess)/100. */
                 const float derateScaleFactor = 1.0f - ( 0.1f * (float)degreesOverThreshold );
-                return (int16_t)( charge_current_for_temperature(get_highest_temperature()) * derateScaleFactor );
+                return (uint16_t)( charge_current_for_temperature(get_highest_temperature()) * derateScaleFactor );
             }
         }
     }

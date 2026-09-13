@@ -23,6 +23,7 @@
 #include <string>
 
 #include "battery.h"
+#include "bms.h"
 #include "pack.h"
 #include "io.h"
 #include "statemachine.h"
@@ -51,7 +52,7 @@ void handle_inbound_CAN_messages() {
 
 
 // Create all battery packs and modules
-void Battery::initialise(Io* _io, Bms* _bms) {
+void Battery::initialise(Bms* _bms) {
 
     voltage = 0;
     lowestCellVoltage = 0;
@@ -59,7 +60,6 @@ void Battery::initialise(Io* _io, Bms* _bms) {
     lowestSensorTemperature = 0;
     highestSensorTemperature = 0;
     numPacks = NUM_PACKS;
-    io = _io;
     bms = _bms;
 
     for ( int p = 0; p < numPacks; p++ ) {
@@ -105,19 +105,6 @@ void Battery::read_message() {
     }
 }
 
-//
-void Battery::send_test_message() {
-    printf("[battery] Sending test messages to all packs\n");
-    for ( int p = 0; p < numPacks; p++ ) {
-        CANMessage fr;
-        fr.id = 0x000;
-        fr.len = 3;
-        fr.data[0] = 0x7E;
-        fr.data[1] = 0x57;
-        fr.data[2] = p;
-        packs[p].send_frame(&fr);
-    }
-}
 
 bool Battery::has_multiple_packs() {
     return numPacks > 1;
@@ -172,10 +159,6 @@ void Battery::recalculate_voltage() {
     voltage = ( contributing > 0 ) ? (uint32_t)( total / contributing ) : highestHealthy;
 }
 
-// Recompute the difference between the highest and lowest cell voltage
-void Battery::recalculate_cell_delta() {
-    cellDelta = highestCellVoltage - lowestCellVoltage;
-}
 
 // Return the maximum allowed voltage of the whole battery
 uint32_t Battery::get_max_voltage() {
@@ -247,12 +230,8 @@ void Battery::process_voltage_update() {
     }
     // Do processing for overall battery
     recalculate_voltage();
-    /* Order matters: recalculate_cell_delta() reads highestCellVoltage and
-     * lowestCellVoltage, so it has to run after they are refreshed. It used to
-     * run first and therefore always used the previous cycle's values. */
     recalculate_lowest_cell_voltage();
     recalculate_highest_cell_voltage();
-    recalculate_cell_delta();
     if ( !packs_are_imbalanced() && bms != nullptr ) {
         this->bms->pack_voltages_match_heartbeat();
     }
@@ -400,16 +379,7 @@ uint32_t Battery::voltage_delta_between_packs() {
     return highestPackVoltage - lowestPackVoltage;
 }
 
-// // return the battery pack which has the highest voltage
-// BatteryPack* Battery::get_pack_with_highest_voltage() {
-//     BatteryPack* pack = &packs[0];
-//     for ( int p = 1; p < numPacks; p++ ) {
-//         if ( packs[p].get_voltage() > pack->get_voltage() ) {
-//             pack = &packs[p];
-//         }
-//     }
-//     return pack;
-// }
+
 
 // Return true if the voltage difference between any two packs is too high and
 // therefore it's unstafe to close the contactors.
@@ -575,12 +545,9 @@ uint16_t Battery::get_max_charge_current_by_temperature() {
         if ( packs[p].contactors_are_inhibited() ) {
             continue;
         }
-        int16_t packMax = packs[p].get_max_charge_current_by_temperature();
-        if ( packMax < 0 ) {
-            packMax = 0;
-        }
-        if ( activePacks == 0 || (uint16_t)packMax < smallestMaxChargeCurrent ) {
-            smallestMaxChargeCurrent = (uint16_t)packMax;
+        const uint16_t packMax = packs[p].get_max_charge_current_by_temperature();
+        if ( activePacks == 0 || packMax < smallestMaxChargeCurrent ) {
+            smallestMaxChargeCurrent = packMax;
         }
         activePacks++;
     }

@@ -20,6 +20,8 @@
 #ifndef BMS_SRC_SETTINGS_H_
 #define BMS_SRC_SETTINGS_H_
 
+#include <stdint.h>   // QUARTZ_FREQUENCY is a uint32_t
+
 #define VERSION 1.0
 
 #define LED_PIN 25
@@ -167,6 +169,15 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
 #define CELL_BALANCING_ENABLED 0
 #define CELL_BALANCE_VOLTAGE 3900                   // mV. Only balance when the highest cell is above this
 #define CELL_BALANCE_INTERVAL_MS 60000              // Interval between cell balancing sessions, milliseconds
+
+/* Hardware watchdog. The worker task must check in at least this often or the
+ * chip resets. Set to 0 to disable. */
+#define WATCHDOG_TIMEOUT_S 5
+
+/* Interval between status prints on the console, in milliseconds. Must be a
+ * multiple of BMS_WORKER_TICK_MS. Set to 0 to disable. Useful during hardware
+ * bring-up; turn it off once the bus is trusted. */
+#define STATUS_PRINT_INTERVAL_MS 10000
 
 /* The single task that runs all periodic BMS work. Priority sits above the
  * idle task and below the ACAN2515 driver task (16), which must stay

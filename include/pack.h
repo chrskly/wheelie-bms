@@ -80,7 +80,7 @@ class BatteryPack {
       bool has_empty_cell();
       uint16_t get_highest_cell_voltage();
       bool has_full_cell();
-      void set_cell_voltage(int moduleIndex, int cellIndex, uint32_t newCellVoltage);
+      void set_cell_voltage(int moduleIndex, int cellIndex, uint16_t newCellVoltage);
       void decode_voltages(CANMessage *frame);
       void recalculate_cell_delta();
       void process_voltage_update();
@@ -102,10 +102,10 @@ class BatteryPack {
       uint8_t get_contactor_inhibit_reasons() { return contactorInhibitReasons; }
 
       int16_t get_max_discharge_current();
-      int16_t get_max_charge_current_by_temperature();
+      uint16_t get_max_charge_current_by_temperature();
       /* Safe lookup into chargeCurrentMax[], which is indexed by
        * (temperature + 10) and only covers -10C..+39C. */
-      int16_t charge_current_for_temperature(int8_t temperature);
+      uint16_t charge_current_for_temperature(int8_t temperature);
 
       void increment_can_tx_error_count() { canTxErrorCount++; }
       void increment_can_rx_error_count() { canRxErrorCount++; }
@@ -120,7 +120,6 @@ class BatteryPack {
        * garbage there silently discarded all voltage data. */
       ACAN2515* CAN = nullptr;                         // CAN bus connection to this pack
       Bms* bms = nullptr;
-      //absolute_time_t lastUpdate;                      // Time we received last update from BMS
       int numModules = 0;                              //
       int numCellsPerModule = 0;                       //
       int numTemperatureSensorsPerModule = 0;          //
@@ -151,13 +150,6 @@ class BatteryPack {
       uint8_t modulePollingCycle = 0;
       CANMessage pollModuleFrame;
 
-      uint8_t dischargeCurve[50] = {
-         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // -10C to -1C
-         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0C to 9C
-         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 10C to 19C
-         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 20C to 29C
-         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 30C to 39C
-      };
 
       // C = 26Ah
       // -10° => +39° => whole charging range
@@ -178,8 +170,11 @@ class BatteryPack {
       int8_t lastTemperatureSample = 0;
       int8_t temperatureDelta = 0;
 
-      int16_t canTxErrorCount = 0;
-      int16_t canRxErrorCount = 0;
+      /* Unsigned: these are counters, and they were declared int16_t while the
+       * getters returned uint16_t, so they went negative after 32767 and then
+       * read back as ~65000. */
+      uint16_t canTxErrorCount = 0;
+      uint16_t canRxErrorCount = 0;
 };
 
 #endif  // BMS_SRC_INCLUDE_PACK_H_

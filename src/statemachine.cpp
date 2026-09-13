@@ -21,6 +21,7 @@
 
 #include "statemachine.h"
 #include "battery.h"
+#include "bms.h"
 #include "led.h"
 
 

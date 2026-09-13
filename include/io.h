@@ -20,7 +20,8 @@
 #ifndef BMS_SRC_INCLUDE_IO_H_
 #define BMS_SRC_INCLUDE_IO_H_
 
-#include "bms.h"
+#include <stdint.h>
+#include <string>     // std::string parameters below
 
 class Bms;
 

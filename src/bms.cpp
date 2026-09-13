@@ -20,6 +20,7 @@
 
 #include "Arduino.h"
 #include <ACAN_ESP32.h>
+#include <esp_task_wdt.h>
 
 #include "bms.h"
 #include "shunt.h"
@@ -211,7 +212,8 @@ void send_limits_message_callback() {
  *   bit 1 = negContactorWelded   - the negative contactor is welded shut
  *   bit 2 = batt1ContactorWelded - the battery 1 contactor is welded shut
  *   bit 3 = batt2ContactorWelded - the battery 2 contactor is welded shut
- * byte 6 = unused
+ * byte 6 = reboot cause
+ *   bit 0 = last reset was caused by a watchdog timeout
  * byte 7 = checksum
  */
 
@@ -248,7 +250,7 @@ void send_bms_state_message_callback() {
     bmsStateFrame.data[3] = bms.get_charge_inhibit_reason();
     bmsStateFrame.data[4] = bms.get_drive_inhibit_reason();
     bmsStateFrame.data[5] = bms.get_welding_byte();
-    bmsStateFrame.data[6] = 0x00;
+    bmsStateFrame.data[6] = bms.get_watchdog_reboot() ? 0x01 : 0x00;
     // data[7] is the checksum; send_frame() computes it because doChecksum is true
     bms.send_frame(&bmsStateFrame, true);
 }
@@ -551,6 +553,24 @@ void handle_main_CAN_messages_callback() {
     CANMessage m;
     extern Shunt shunt;
     extern Bms bms;
+
+    /* B157: canRxErrorCount had no increment anywhere and always transmitted 0.
+     * statusFlags() bit 0 is a hardware receive FIFO overflow and bit 1 a
+     * driver receive FIFO overflow, which are genuine dropped-frame events.
+     * Counted on the rising edge only, since the flags are level-based.
+     * Bus-off (bit 2) is also recovered from here -- otherwise the controller
+     * stays off the bus permanently and the BMS goes silently deaf. */
+    static uint32_t previousStatusFlags = 0;
+    const uint32_t statusFlags = ACAN_ESP32::can.statusFlags();
+    const uint32_t newFlags = statusFlags & ~previousStatusFlags;
+    previousStatusFlags = statusFlags;
+    if ( newFlags & 0x03 ) {
+        bms.increment_can_rx_error_count();
+    }
+    if ( newFlags & 0x04 ) {
+        printf("[bms] main CAN bus-off, attempting recovery\n");
+        ACAN_ESP32::can.recoverFromBusOff();
+    }
     if ( bms.read_frame(&m) ) {
         switch ( m.id ) {
             // ISA shunt amps
@@ -659,6 +679,12 @@ static void bms_worker_task(void* /*pvParameters*/) {
     uint32_t tick = 0;
     TickType_t lastWake = xTaskGetTickCount();
 
+#if WATCHDOG_TIMEOUT_S > 0
+    if ( esp_task_wdt_add(NULL) != ESP_OK ) {
+        printf("[bms] WARNING could not subscribe the worker task to the watchdog\n");
+    }
+#endif
+
     for ( ;; ) {
         // Every 5 ms: drain both CAN buses
         battery.read_message();
@@ -687,12 +713,30 @@ static void bms_worker_task(void* /*pvParameters*/) {
         // Every 5 s
         if ( ( tick % 1000 ) == 160 ) { send_module_liveness_message_callback(); }
 
+#if STATUS_PRINT_INTERVAL_MS > 0
+        if ( ( tick % (STATUS_PRINT_INTERVAL_MS / BMS_WORKER_TICK_MS) ) == 180 ) {
+            bms.print();
+        }
+#endif
+
+        // Tell the watchdog we are still making progress
+#if WATCHDOG_TIMEOUT_S > 0
+        esp_task_wdt_reset();
+#endif
         tick++;
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(BMS_WORKER_TICK_MS));
     }
 }
 
 void Bms::start() {
+#if WATCHDOG_TIMEOUT_S > 0
+    /* The pico build had a watchdog; the port left it entirely commented out,
+     * so a hung worker task would simply stop the BMS with the contactors in
+     * whatever state they were last left. panic = true resets the chip. */
+    if ( esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true) != ESP_OK ) {
+        printf("[bms][start] WARNING could not configure the task watchdog\n");
+    }
+#endif
     printf("[bms][start] starting BMS worker task\n");
     const BaseType_t created = xTaskCreate(
         bms_worker_task,
@@ -759,7 +803,7 @@ void Bms::print() {
     int16_t Vmin = battery->get_lowest_cell_voltage();
     printf("State:%s, SoC:%d, DRV_INH:%s, CHG_INH:%s, IGN:%s, CHG_EN:%s\n",
         get_state_name(get_state()), soc, drv_inh.c_str(), chg_inh.c_str(), ign.c_str(), chg_en.c_str());
-    printf(" V:%d, VMax:%d, VMin:%d\n", battery->get_voltage()/1000, Vmax, Vmin );
+    printf(" V:%u, VMax:%d, VMin:%d\n", (unsigned int)(battery->get_voltage()/1000), Vmax, Vmin );
     printf(" TMax:%d, TMin:%d\n", Tmax, Tmin );
     battery->print();
 }
@@ -1040,7 +1084,7 @@ void Bms::update_max_discharge_current() {
     maxDischargeCurrent = (uint16_t)( DISCHARGE_CURRENT_MAX_PER_PACK_A * activePacks );
 }
 
-uint16_t Bms::Bms::get_max_discharge_current() {
+uint16_t Bms::get_max_discharge_current() {
     return maxDischargeCurrent;
 }
 
