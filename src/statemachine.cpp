@@ -329,12 +329,18 @@ void state_batteryHeating(Event event) {
      * arrives, and the heater runs indefinitely with no feedback. */
     const bool heatingBlind = battery.temperature_data_is_stale();
     const bool heatingTimedOut = ( bms.time_in_state_ms() > BATTERY_HEATING_TIMEOUT_MS );
-    if ( heatingBlind || heatingTimedOut ) {
+    /* too_cold_to_charge() looks at the COLDEST sensor and too_hot() at the
+     * hottest, so both can be satisfied at once on a pack with a wide spread.
+     * Do not add heat to a pack that already has a cell up at the warning
+     * level just because another cell is cold. */
+    const bool alreadyWarm = ( battery.get_highest_sensor_temperature() >= WARNING_TEMPERATURE );
+    if ( heatingBlind || heatingTimedOut || alreadyWarm ) {
         bms.disable_heater();
         // Log on the transition only; this block runs for every event dispatched
         if ( !bms.has_internal_error(IE_HEATER_INEFFECTIVE) ) {
             printf("[statemachine] heating abandoned : %s\n",
-                   heatingBlind ? "temperature data stale" : "timed out");
+                   heatingBlind ? "temperature data stale"
+                                : ( alreadyWarm ? "a cell is already warm" : "timed out" ));
         }
         bms.set_internal_error(IE_HEATER_INEFFECTIVE);
     } else {

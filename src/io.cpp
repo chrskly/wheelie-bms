@@ -88,6 +88,28 @@ static bool debounce_input(int pin, bool& state, uint8_t& settleCount) {
 void Io::poll_inputs() {
     extern Bms bms;
 
+    /* Booting with the ignition already on, or the charger already connected,
+     * used to leave the state machine sitting in standby for as long as the
+     * signal stayed put: nothing changed, so nothing was dispatched. The
+     * vehicle drove with the BMS reporting standby, and a charger connected at
+     * power-on never armed drive-away protection.
+     *
+     * Charge is dispatched first deliberately. Taking ignition first would move
+     * us into the drive state, where E_CHARGING_INITIATED with the (still
+     * inhibited) startup contactors trips the illegal-transition fault. */
+    if ( !initialStateDispatched ) {
+        initialStateDispatched = true;
+        printf("[io] initial input state : ignition %s, charge %s\n",
+               ignitionOn ? "on" : "off", chargeEnable ? "on" : "off");
+        if ( chargeEnable ) {
+            bms.send_event(E_CHARGING_INITIATED);
+        }
+        if ( ignitionOn ) {
+            bms.send_event(E_IGNITION_ON);
+        }
+        return;
+    }
+
     if ( debounce_input(IGNITION_ENABLE_PIN, ignitionOn, ignitionSettleCount) ) {
         printf("[io] Ignition signal changed to : %s\n", ignitionOn ? "on" : "off");
         bms.send_event( ignitionOn ? E_IGNITION_ON : E_IGNITION_OFF );

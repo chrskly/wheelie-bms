@@ -77,6 +77,14 @@ static void reconcile_inhibit_reasons() {
         bms.disable_charge_inhibit("[RC] shunt responsive", R_SHUNT_UNRESPONSIVE);
         bms.disable_drive_inhibit("[RC] shunt responsive", R_SHUNT_UNRESPONSIVE);
     }
+    /* The flag is the condition behind R_ILLEGAL_STATE_TRANSITION, so it has to
+     * be cleared here rather than reasoned about: leaving
+     * illegalStateTransitionFault via criticalFault (dead module or shunt) left
+     * it set, and criticalFault's exits do not clear it, so the reason below
+     * could never be withdrawn. */
+    if ( bms.get_state() != &state_illegalStateTransitionFault ) {
+        bms.clear_illegal_state_transition();
+    }
     if ( !bms.get_illegal_state_transition() ) {
         bms.disable_drive_inhibit("[RC] no illegal transition", R_ILLEGAL_STATE_TRANSITION);
         bms.disable_charge_inhibit("[RC] no illegal transition", R_ILLEGAL_STATE_TRANSITION);

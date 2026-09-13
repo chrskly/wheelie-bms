@@ -34,6 +34,10 @@ class Io {
         bool chargeEnable = false;     // Charger is asking to charge
         uint8_t ignitionSettleCount = 0;
         uint8_t chargeEnableSettleCount = 0;
+        /* The inputs are edge-triggered, so a signal that is ALREADY active at
+         * power-on produces no change and therefore no event. Dispatch the
+         * initial levels once so the state machine starts in the right state. */
+        bool initialStateDispatched = false;
         int lastInterrupt = 0;
         /* Outputs. Tracked here rather than read back with digitalRead(): a pin
          * configured with plain OUTPUT has its input buffer disabled on ESP32,
