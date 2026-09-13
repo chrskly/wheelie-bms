@@ -25,7 +25,7 @@
 
 
 
-StatusLight::StatusLight(Bms* _bms) {
+StatusLight::StatusLight() {
     on = false;
     counter = 0;
     onDuration = 0;

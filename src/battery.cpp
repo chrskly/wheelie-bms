@@ -399,7 +399,7 @@ bool Battery::has_dead_cell() {
 //// ----
 
 void Battery::update_highest_sensor_temperature() {
-    float newHighestSensorTemperature = packs[0].get_highest_temperature();
+    int8_t newHighestSensorTemperature = packs[0].get_highest_temperature();
     for ( int p = 1; p < numPacks; p++ ) {
         if ( packs[p].get_highest_temperature() > newHighestSensorTemperature ) {
             newHighestSensorTemperature = packs[p].get_highest_temperature();
@@ -431,7 +431,7 @@ bool Battery::too_hot() {
 }
 
 void Battery::update_lowest_sensor_temperature() {
-    float newLowestSensorTemperature = packs[0].get_lowest_temperature();
+    int8_t newLowestSensorTemperature = packs[0].get_lowest_temperature();
     for ( int p = 1; p < numPacks; p++ ) {
         if ( packs[p].get_lowest_temperature() < newLowestSensorTemperature ) {
             newLowestSensorTemperature = packs[p].get_lowest_temperature();

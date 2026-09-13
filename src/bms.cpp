@@ -315,7 +315,6 @@ void send_limits_message_callback() {
 
 void send_bms_state_message_callback() {
     extern Bms bms;
-    extern Battery battery;
     CANMessage bmsStateFrame;
     zero_frame(&bmsStateFrame);
 
@@ -725,7 +724,7 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     io = _io;
     shunt = _shunt;
     internalErrorFlags = 0;
-    statusLight = StatusLight(this);
+    statusLight = StatusLight();
     /* init() assigns `state` directly rather than going through set_state(), so
      * select the matching blink pattern explicitly -- otherwise both durations
      * stay at their defaults of 0 and the light sits solid on. */
@@ -746,7 +745,7 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     if ( errorCode == 0 ) {
         printf("[bms][init] main CAN port initialized successfully\n");
     } else {
-        printf("[bms][init] WARNING problem initializing main CAN port : %lu\n", errorCode);
+        printf("[bms][init] WARNING problem initializing main CAN port : %u\n", (unsigned int)errorCode);
     }
 
 #if CAN_SELF_TEST_AT_INIT
@@ -860,32 +859,24 @@ void Bms::start() {
     }
 }
 
-void Bms::set_state(State newState, std::string reason) {
+void Bms::set_state(State newState, const char* reason) {
     stateEnteredAt = get_clock_ms();
-    std::string oldStateName = get_state_name(state);
-    std::string newStateName = get_state_name(newState);
-    printf("[bms][set_state] switching from state %s to state %s, reason : %s\n", oldStateName.c_str(), newStateName.c_str(), reason.c_str());
+    printf("[bms][set_state] switching from state %s to state %s, reason : %s\n",
+           get_state_name(state), get_state_name(newState), reason);
     state = newState;
     // Change light blinking pattern based on state
+    /* Written as a single assignment rather than a chain of branches that
+     * mostly set FAULT -- the chain tripped -Wduplicated-branches, which is a
+     * warning worth keeping sensitive. */
+    LED_MODE mode = FAULT;
     if ( state == state_standby ) {
-        statusLight.set_mode(STANDBY);
+        mode = STANDBY;
     } else if ( state == state_drive ) {
-        statusLight.set_mode(DRIVE);
-    } else if ( state == state_batteryHeating ) {
-        statusLight.set_mode(CHARGING);
-    } else if ( state == state_charging ) {
-        statusLight.set_mode(CHARGING);
-    } else if ( state == state_batteryEmpty ) {
-        statusLight.set_mode(FAULT);
-    } else if ( state == state_overTempFault ) {
-        statusLight.set_mode(FAULT);
-    } else if ( state == state_illegalStateTransitionFault ) {
-        statusLight.set_mode(FAULT);
-    } else if ( state == state_criticalFault ) {
-        statusLight.set_mode(FAULT);
-    } else {
-        statusLight.set_mode(FAULT);
+        mode = DRIVE;
+    } else if ( state == state_batteryHeating || state == state_charging ) {
+        mode = CHARGING;
     }
+    statusLight.set_mode(mode);
 }
 
 State Bms::get_state() {
@@ -908,16 +899,16 @@ void Bms::send_event(Event event) {
 }
 
 void Bms::print() {
-    std::string chg_inh = io->charge_is_inhibited() ? "true" : "false";
-    std::string drv_inh = io->drive_is_inhibited() ? "true" : "false";
-    std::string ign = io->ignition_is_on() ? "true" : "false";
-    std::string chg_en = io->charge_enable_is_on() ? "true" : "false";
+    const char* chg_inh = io->charge_is_inhibited() ? "true" : "false";
+    const char* drv_inh = io->drive_is_inhibited() ? "true" : "false";
+    const char* ign = io->ignition_is_on() ? "true" : "false";
+    const char* chg_en = io->charge_enable_is_on() ? "true" : "false";
     int8_t Tmax = battery->get_highest_sensor_temperature();
     int8_t Tmin = battery->get_lowest_sensor_temperature();
     int16_t Vmax = battery->get_highest_cell_voltage();
     int16_t Vmin = battery->get_lowest_cell_voltage();
     printf("State:%s, SoC:%d, DRV_INH:%s, CHG_INH:%s, IGN:%s, CHG_EN:%s\n",
-        get_state_name(get_state()), soc, drv_inh.c_str(), chg_inh.c_str(), ign.c_str(), chg_en.c_str());
+        get_state_name(get_state()), soc, drv_inh, chg_inh, ign, chg_en);
     printf(" V:%u, VMax:%d, VMin:%d\n", (unsigned int)(battery->get_voltage()/1000), Vmax, Vmin );
     printf(" TMax:%d, TMin:%d\n", Tmax, Tmin );
 #if STATUS_PRINT_CELL_DETAIL
@@ -950,22 +941,18 @@ static int8_t most_severe_reason(uint16_t mask) {
     return (int8_t)R_NONE;
 }
 
-void Bms::enable_drive_inhibit(std::string context, InhibitReason reason) {
+void Bms::enable_drive_inhibit(const char* context, InhibitReason reason) {
     driveInhibitReasons |= inhibit_reason_bit(reason);
     io->enable_drive_inhibit(context);
 }
 
-void Bms::disable_drive_inhibit(std::string context, InhibitReason reason) {
+void Bms::disable_drive_inhibit(const char* context, InhibitReason reason) {
     driveInhibitReasons &= (uint16_t)~inhibit_reason_bit(reason);
     if ( driveInhibitReasons == 0 ) {
         io->disable_drive_inhibit(context);
     }
 }
 
-void Bms::clear_all_drive_inhibit_reasons(std::string context) {
-    driveInhibitReasons = 0;
-    io->disable_drive_inhibit(context);
-}
 
 bool Bms::drive_is_inhibited() {
     return io->drive_is_inhibited();
@@ -977,22 +964,18 @@ int8_t Bms::get_drive_inhibit_reason() {
 
 // CHARGE_INHIBIT
 
-void Bms::enable_charge_inhibit(std::string context, InhibitReason reason) {
+void Bms::enable_charge_inhibit(const char* context, InhibitReason reason) {
     chargeInhibitReasons |= inhibit_reason_bit(reason);
     io->enable_charge_inhibit(context);
 }
 
-void Bms::disable_charge_inhibit(std::string context, InhibitReason reason) {
+void Bms::disable_charge_inhibit(const char* context, InhibitReason reason) {
     chargeInhibitReasons &= (uint16_t)~inhibit_reason_bit(reason);
     if ( chargeInhibitReasons == 0 ) {
         io->disable_charge_inhibit(context);
     }
 }
 
-void Bms::clear_all_charge_inhibit_reasons(std::string context) {
-    chargeInhibitReasons = 0;
-    io->disable_charge_inhibit(context);
-}
 
 bool Bms::charge_is_inhibited() {
     return io->charge_is_inhibited();
@@ -1052,10 +1035,6 @@ void Bms::recalculate_soc() {
     } else {
         capacity  = (int64_t)BATTERY_CAPACITY_WH;
         remaining = capacity + (int64_t)shunt->get_wattHours();
-    }
-    if ( capacity <= 0 ) {
-        soc = 0;
-        return;
     }
     int64_t percent = ( 100 * remaining ) / capacity;
     if ( percent < 0 )   { percent = 0; }

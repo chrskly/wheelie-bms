@@ -37,7 +37,7 @@ void zero_frame(CANMessage* frame) {
     }
 }
 
-void print_frame(CANMessage* frame) {
+void print_frame(const CANMessage* frame) {
     printf(" [print_frame] ID: 0x%03X, DLC: %d, Data: ", (unsigned int)frame->id, frame->len);
     for ( int i = 0; i < 8; i++ ) {
         printf("%d ", frame->data[i]);

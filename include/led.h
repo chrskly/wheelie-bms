@@ -44,8 +44,7 @@ class StatusLight {
         int offDuration = 0;
 
     public:
-        StatusLight() {};
-        StatusLight(Bms* _bms);
+        StatusLight();
         void set_mode(LED_MODE newMode);
         void led_blink();
 };

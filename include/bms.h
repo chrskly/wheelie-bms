@@ -108,7 +108,7 @@ class Bms {
         void start();
 
         // State and events
-        void set_state(State _state, std::string reason);
+        void set_state(State _state, const char* reason);
         State get_state();
         // How long we have been in the current state, in milliseconds
         uint64_t time_in_state_ms();
@@ -122,18 +122,16 @@ class Bms {
         /* DRIVE_INHIBIT / CHARGE_INHIBIT.
          *
          * disable_*() withdraws ONE reason; the output is only released once no
-         * reason remains. clear_all_*_reasons() is the explicit "everything is
-         * resolved" escape hatch, used when entering a state that owns the
-         * decision outright. */
-        void enable_drive_inhibit(std::string context, InhibitReason reason);
-        void disable_drive_inhibit(std::string context, InhibitReason reason);
-        void clear_all_drive_inhibit_reasons(std::string context);
+         * reason remains. There is deliberately no "clear everything" helper:
+         * that is exactly the behaviour that used to release fault holds, and
+         * an unused one sitting here is an invitation to reintroduce it. */
+        void enable_drive_inhibit(const char* context, InhibitReason reason);
+        void disable_drive_inhibit(const char* context, InhibitReason reason);
         bool drive_is_inhibited();
         int8_t get_drive_inhibit_reason();
 
-        void enable_charge_inhibit(std::string context, InhibitReason reason);
-        void disable_charge_inhibit(std::string context, InhibitReason reason);
-        void clear_all_charge_inhibit_reasons(std::string context);
+        void enable_charge_inhibit(const char* context, InhibitReason reason);
+        void disable_charge_inhibit(const char* context, InhibitReason reason);
         bool charge_is_inhibited();
         int8_t get_charge_inhibit_reason();
 

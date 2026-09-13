@@ -40,8 +40,11 @@ class Battery {
       uint16_t highestCellVoltage = 0;         // Voltage of cell with highest voltage across whole battery
       uint32_t minimumBatteryVoltage = 0;      // Lowest permitted voltage of the whole battery
       uint32_t maximumBatteryVoltage = 0;      // Highest permitted voltage of the whole battery
-      float lowestSensorTemperature = 0;       //
-      float highestSensorTemperature = 0;      //
+      /* Whole degrees C. These held int8_t values in floats, so the getters
+       * performed a float -> int8_t conversion that is undefined if the value
+       * ever falls outside int8_t range. */
+      int8_t lowestSensorTemperature = 0;
+      int8_t highestSensorTemperature = 0;
       /* Latched threshold results, updated in process_temperature_update().
        * too_hot() / too_cold_to_charge() just read these, so they stay pure
        * getters and every caller in a given cycle sees the same answer. */
@@ -70,7 +73,6 @@ class Battery {
 
       // Voltage
       uint32_t get_voltage();
-      void set_voltage(uint32_t voltage) { this->voltage = voltage; }
       void recalculate_voltage();
       uint32_t get_max_voltage();
       uint32_t get_min_voltage();
@@ -115,7 +117,8 @@ class Battery {
        * a pack held for a dead cell stayed held for the life of the program. */
       void reevaluate_dead_cell_inhibition();
 
-      uint8_t get_module_liveness_byte(int8_t moduleId);
+      // startModuleId indexes modules across the WHOLE battery, not within a pack
+      uint8_t get_module_liveness_byte(int8_t startModuleId);
       bool is_alive();
       bool contactor_is_welded(uint8_t packId);
 };

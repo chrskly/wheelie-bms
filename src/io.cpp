@@ -86,8 +86,6 @@ static bool debounce_input(int pin, bool& state, uint8_t& settleCount) {
 }
 
 void Io::poll_inputs() {
-    extern Bms bms;
-
     /* Booting with the ignition already on, or the charger already connected,
      * used to leave the state machine sitting in standby for as long as the
      * signal stayed put: nothing changed, so nothing was dispatched. The
@@ -127,17 +125,17 @@ void Io::poll_inputs() {
 
 // DRIVE_INHIBIT output
 
-void Io::enable_drive_inhibit(std::string context) {
+void Io::enable_drive_inhibit(const char* context) {
     if ( !driveInhibited ) {
-        printf("[io] Enabling drive inhibit : %s\n", context.c_str());
+        printf("[io] Enabling drive inhibit : %s\n", context);
     }
     driveInhibited = true;
     digitalWrite(DRIVE_INHIBIT_PIN, HIGH);
 }
 
-void Io::disable_drive_inhibit(std::string context) {
+void Io::disable_drive_inhibit(const char* context) {
     if ( driveInhibited ) {
-        printf("[io] Disabling drive inhibit : %s\n", context.c_str());
+        printf("[io] Disabling drive inhibit : %s\n", context);
     }
     driveInhibited = false;
     digitalWrite(DRIVE_INHIBIT_PIN, LOW);
@@ -149,17 +147,17 @@ bool Io::drive_is_inhibited() {
 
 // CHARGE_INHIBIT output
 
-void Io::enable_charge_inhibit(std::string context) {
+void Io::enable_charge_inhibit(const char* context) {
     if ( !chargeInhibited ) {
-        printf("[io] Enabling charge inhibit : %s\n", context.c_str());
+        printf("[io] Enabling charge inhibit : %s\n", context);
     }
     chargeInhibited = true;
     digitalWrite(CHARGE_INHIBIT_PIN, HIGH);
 }
 
-void Io::disable_charge_inhibit(std::string context) {
+void Io::disable_charge_inhibit(const char* context) {
     if ( chargeInhibited ) {
-        printf("[io] Disabling charge inhibit : %s\n", context.c_str());
+        printf("[io] Disabling charge inhibit : %s\n", context);
     }
     chargeInhibited = false;
     digitalWrite(CHARGE_INHIBIT_PIN, LOW);

@@ -50,10 +50,10 @@ class BatteryPack {
       /* Initialise in place. Do NOT construct a temporary and copy-assign it:
        * each BatteryModule stores a back-pointer to its parent pack, so building
        * a temporary BatteryPack leaves every module pointing at freed stack. */
-      void init(int _id, int CANCSPin, int _contactorPin, int _contactorFeedbackPin, int _numModules,
+      void init(int _id, int CANCSPin, int _contactorInhibitPin, int _contactorFeedbackPin, int _numModules,
             int _numCellsPerModule, int _numTemperatureSensorsPerModule, Bms* _bms);
 
-      void set_battery(Battery* battery) { this->battery = battery; }
+      void set_battery(Battery* parent) { this->battery = parent; }
 
       void print();
       uint8_t getcheck(CANMessage &msg, int moduleId);  // moduleId, NOT pack id
@@ -77,7 +77,7 @@ class BatteryPack {
       uint16_t get_balance_target_mv();
 
       // Voltage
-      float get_voltage();
+      uint32_t get_voltage();
       void recalculate_total_voltage();
       uint16_t get_lowest_cell_voltage();
       bool has_empty_cell();
@@ -101,7 +101,6 @@ class BatteryPack {
       void disable_inhibit_contactor_close(ContactorInhibitReason reason);
       bool contactors_are_inhibited();
       bool contactors_are_welded();
-      uint8_t get_contactor_inhibit_reasons() { return contactorInhibitReasons; }
 
       int16_t get_max_discharge_current();
       uint16_t get_max_charge_current_by_temperature();
@@ -123,7 +122,7 @@ class BatteryPack {
       int numCellsPerModule = 0;                       //
       int numTemperatureSensorsPerModule = 0;          //
       Battery* battery = nullptr;                      // The parent Battery that contains this BatteryPack
-      float voltage = 0.0f;                            // Voltage of the total pack
+      uint32_t voltage = 0;                            // Voltage of the total pack, in millivolts
       uint16_t cellDelta = 0;                          // Difference in voltage between high and low cell, in mV
 
       // contactors

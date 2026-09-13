@@ -21,13 +21,11 @@
 #define BMS_SRC_INCLUDE_IO_H_
 
 #include <stdint.h>
-#include <string>     // std::string parameters below
 
 class Bms;
 
 class Io {
     private:
-        Bms* bms = nullptr;
         // Inputs
         // Debounced input states. These are what ignition_is_on() etc. report.
         bool ignitionOn = false;
@@ -60,11 +58,20 @@ class Io {
          * writes and CAN sends) in interrupt context, with no debouncing.
          * Called from the BMS worker task instead. */
         void poll_inputs();
-        void enable_drive_inhibit(std::string context);
-        void disable_drive_inhibit(std::string context);
+/* Context strings are const char*, not std::string.
+ *
+ * Every one of these is called with a string literal, and passing them by value
+ * as std::string constructed a fresh string on each call. 118 of the 123
+ * literals in this codebase are longer than the 15-character small-string
+ * buffer, so each of those was a heap allocation -- roughly 350 malloc/free
+ * pairs per second on the control task once the reconciliation pass and the
+ * per-state safety blocks are counted. That is non-deterministic timing and a
+ * fragmentation risk in a loop that a 5 second watchdog is watching. */
+        void enable_drive_inhibit(const char* context);
+        void disable_drive_inhibit(const char* context);
         bool drive_is_inhibited();
-        void enable_charge_inhibit(std::string context);
-        void disable_charge_inhibit(std::string context);
+        void enable_charge_inhibit(const char* context);
+        void disable_charge_inhibit(const char* context);
         bool charge_is_inhibited();
         void enable_heater();
         void disable_heater();

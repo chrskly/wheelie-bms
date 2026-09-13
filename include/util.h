@@ -36,7 +36,7 @@
 uint64_t get_clock_ms();
 
 void zero_frame(CANMessage* frame);
-void print_frame(CANMessage* frame);
+void print_frame(const CANMessage* frame);
 
 /*
  * Little-endian field writers for CAN payloads.

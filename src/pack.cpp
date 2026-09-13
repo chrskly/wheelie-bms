@@ -78,7 +78,7 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
     }
 #endif
 
-    voltage = 0.0000f;
+    voltage = 0;
     cellDelta = 0;
 
     /* Set up contactor control. Starts INHIBITED: the previous code drove this
@@ -107,7 +107,7 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
 }
 
 void BatteryPack::print() {
-    printf("[pack%d] %3.2fV : Hi %d : Lo %d : %dmV\n", id, (voltage/1000), get_highest_cell_voltage(), get_lowest_cell_voltage(), cellDelta);
+    printf("[pack%d] %3.2fV : Hi %d : Lo %d : %dmV\n", id, ((float)voltage / 1000.0f), get_highest_cell_voltage(), get_lowest_cell_voltage(), cellDelta);
     for ( int m = 0; m < numModules; m++ ) {
         modules[m].print();
     }
@@ -426,7 +426,7 @@ uint16_t BatteryPack::get_balance_target_mv() {
 //// ----
 
 // Return the voltage of the whole pack
-float BatteryPack::get_voltage() {
+uint32_t BatteryPack::get_voltage() {
     return voltage;
 }
 
@@ -437,10 +437,10 @@ void BatteryPack::recalculate_total_voltage() {
      * 0 (== "no reading", which the callers already guard for) until the whole
      * pack has reported. */
     if ( !all_modules_populated() ) {
-        voltage = 0.0f;
+        voltage = 0;
         return;
     }
-    float newVoltage = 0;
+    uint32_t newVoltage = 0;
     for ( int m = 0; m < numModules; m++ ) {
         newVoltage += modules[m].get_voltage();
     }
@@ -728,13 +728,26 @@ void BatteryPack::process_temperature_update() {
     /* The first sample only establishes the baseline. Differencing against the
      * initial 0 made a 25 C pack look like it was rising at 25 C/minute, which
      * derated the charge current straight to zero. */
+    /* No usable reading this cycle: drop the baseline rather than differencing
+     * against a sentinel. get_highest_temperature() returns -126 when no module
+     * has data, and -126 against a real +100 is -226, which wraps in an int8_t
+     * to +30 -- a fabricated 30 C/minute rise that derates charge current to
+     * zero (or, with the signs reversed, hides a real one). */
+    if ( highest <= -126 ) {
+        haveTemperatureBaseline = false;
+        temperatureDelta = 0;
+        return;
+    }
     if ( !haveTemperatureBaseline ) {
         lastTemperatureSample = highest;
         temperatureDelta = 0;
         haveTemperatureBaseline = true;
         return;
     }
-    temperatureDelta = highest - lastTemperatureSample;
+    int delta = (int)highest - (int)lastTemperatureSample;
+    if ( delta < -127 ) { delta = -127; }
+    if ( delta >  127 ) { delta =  127; }
+    temperatureDelta = (int8_t)delta;
     lastTemperatureSample = highest;
 }
 
