@@ -634,8 +634,8 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
 
     printf("[bms][init] setting up main CAN port\n");
     ACAN_ESP32_Settings settings(500 * 1000);
-    settings.mRxPin = GPIO_NUM_16;
-    settings.mTxPin = GPIO_NUM_17;
+    settings.mRxPin = (gpio_num_t)MAIN_CAN_RX_PIN;
+    settings.mTxPin = (gpio_num_t)MAIN_CAN_TX_PIN;
     const uint32_t errorCode = ACAN_ESP32::can.begin(settings);
     if ( errorCode == 0 ) {
         printf("[bms][init] main CAN port initialized successfully\n");

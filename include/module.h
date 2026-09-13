@@ -39,6 +39,13 @@ class BatteryModule {
       uint16_t cellVoltage[CELLS_PER_MODULE];    // Voltages of each cell, stored in mV
       int8_t cellTemperature[TEMPS_PER_MODULE];  // Temperatures of each cell (-127 == no reading yet)
       bool allModuleDataPopulated = false;       // True when we have voltage/temp information for all cells
+      /* Reported by this module in its 0x10X status frame. Held per module
+       * because the frame is per module: these used to be written into
+       * pack-level fields, so the last module to report won and one module
+       * reporting a balance status suppressed voltage capture for every
+       * module in the pack. */
+      uint32_t balanceStatus = 0;
+      uint32_t errorStatus = 0;
       uint64_t lastHeartbeat = 0;                // get_clock_ms() when we last got an update from this module
       BatteryPack* pack = nullptr;               // The parent BatteryPack that contains this module
 
@@ -61,6 +68,10 @@ class BatteryModule {
       bool has_dead_cell();
 
       // Module status
+      void set_balance_status(uint32_t status) { balanceStatus = status; }
+      uint32_t get_balance_status() { return balanceStatus; }
+      void set_error_status(uint32_t status) { errorStatus = status; }
+      uint32_t get_error_status() { return errorStatus; }
       bool all_module_data_populated();
       void check_if_module_data_is_populated();
       bool is_alive();

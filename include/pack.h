@@ -66,10 +66,6 @@ class BatteryPack {
       void poll_can();
       bool send_frame(CANMessage *frame);
 
-      void set_pack_error_status(int newErrorStatus);
-      int get_pack_error_status();
-      void set_pack_balance_status(int newBalanceStatus);
-      int get_pack_balance_status();
       bool pack_is_due_to_be_balanced();
       void reset_balance_timer();
 
@@ -115,9 +111,7 @@ class BatteryPack {
    private:
       /* Default initialisers on every member: BatteryPack is default-constructed
        * as part of Battery's array long before init() runs on it, and several of
-       * these were read before init() ever assigned them. balanceStatus in
-       * particular gates every cell-voltage store in decode_voltages(), so
-       * garbage there silently discarded all voltage data. */
+       * these were read before init() ever assigned them. */
       ACAN2515* CAN = nullptr;                         // CAN bus connection to this pack
       Bms* bms = nullptr;
       int numModules = 0;                              //
@@ -137,8 +131,6 @@ class BatteryPack {
       uint8_t contactorInhibitReasons = CI_STARTUP;
       uint64_t contactorInhibitedSince = 0;   // get_clock_ms(), for weld-check settling
 
-      uint32_t balanceStatus = 0;                      // Status of the balance of the pack
-      uint32_t errorStatus = 0;                        //
       bool balancingEnabled = false;                   //
       uint64_t nextBalanceTime = 0;                    // get_clock_ms() at which the next balance may start
       uint8_t pollMessageId = 0;                       //

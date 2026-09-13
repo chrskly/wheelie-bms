@@ -80,6 +80,10 @@ static void start_can_clock() {
 
 
 void setup() {
+    /* printf() goes to UART0. The ROM bootloader already leaves it running, but
+     * bring it up explicitly so the rate is ours rather than inherited. */
+    Serial.begin(CONSOLE_BAUD_RATE);
+    delay(50);
     printf("BMS starting up ...\n");
 
     // Check for unexpected reboot

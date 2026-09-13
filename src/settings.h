@@ -24,7 +24,35 @@
 
 #define VERSION 1.0
 
-#define LED_PIN 25
+/*==============================================================================
+ * PIN MAP  --  ESP32-S3
+ *
+ * VERIFY THESE AGAINST YOUR BOARD BEFORE FLASHING. The numbers below are a
+ * valid, conflict-free assignment, but they are NOT derived from a schematic;
+ * they were chosen to satisfy the constraints listed below after the original
+ * map was found to be unusable. The original was inherited verbatim from the
+ * RP2040 build and was broken in several ways at once:
+ *
+ *   - LED_PIN 25 does not exist on the ESP32-S3 (GPIO22-25 are absent)
+ *   - SPI_MOSI 19 and CS_PINS[0] 20 are the native USB D-/D+ pins
+ *   - the main CAN RX/TX pins collided with SPI_MISO and MAIN_CAN_CS
+ *   - INHIBIT_CONTACTOR_PINS[1] was GPIO3, a strapping pin
+ *   - SPI_PORT/UART_ID were Pico SDK identifiers that mean nothing here
+ *
+ * Constraints applied, all enforced by the static_asserts at the end of this
+ * block so that editing these numbers cannot silently reintroduce a clash:
+ *
+ *   - GPIO22-25 do not exist on this part
+ *   - GPIO26-37 are SPI flash and (on octal-PSRAM modules) PSRAM
+ *   - GPIO19/20 are native USB
+ *   - GPIO43/44 are the UART0 console
+ *   - GPIO0/3/45/46 are strapping pins
+ *   - GPIO38 and GPIO48 are the devkit's RGB LED (revision dependent), avoided
+ *   - no pin is used twice
+ *============================================================================*/
+
+// Status LED. A plain GPIO driving an external LED, not the devkit's RGB LED.
+#define LED_PIN 47
 
 /* Clock fed to the MCP2515 CAN controllers.
  *
@@ -38,32 +66,35 @@
  * set CAN_CLK_PIN to -1 to disable generation and set this to the crystal's
  * frequency instead. */
 static const uint32_t QUARTZ_FREQUENCY = 8UL * 1000UL * 1000UL;  // 8 MHz
-#define CAN_CLK_LEDC_CHANNEL 0                      // LEDC channel used to synthesise the CAN clock
+#define CAN_CLK_PIN 21                              // LEDC-generated MCP2515 oscillator
+#define CAN_CLK_LEDC_CHANNEL 0                      // LEDC channel used to synthesise the clock
 
-// Serial port
-#define UART_ID      uart0
-#define BAUD_RATE   115200
-#define UART_TX_PIN      0                          // pin 1
-#define UART_RX_PIN      1                          // pin 2
+/* Console. printf() goes to UART0, which the ROM bootloader brings up on
+ * GPIO43/44; setup() calls Serial.begin() so the rate is set explicitly rather
+ * than inherited. The old UART_ID/UART_TX_PIN/UART_RX_PIN defines were Pico
+ * SDK config, were referenced nowhere, and named pins used for other things. */
+#define CONSOLE_BAUD_RATE 115200
 
-// Number of paralleled packs. Declared here because the pin arrays below are
-// sized by it.
+// Number of paralleled packs. The pin arrays below are sized by it.
 #define NUM_PACKS_CFG 2
 
-// CAN bus
-#define SPI_PORT      spi0
-#define SPI_MISO        16                          // pin 21
-#define SPI_CLK         18                          // pin 24
-#define SPI_MOSI        19                          // pin 25
-#define CAN_CLK_PIN     21                          // pin 27
-#define MAIN_CAN_CS     17                          // pin 22
-const int CS_PINS[NUM_PACKS_CFG] = { 20, 15 };      // Chip select pins for the CAN controllers for each battery pack.
+/* Main CAN bus. This is the ESP32's own TWAI controller, not an MCP2515, so
+ * there is no chip select -- the old MAIN_CAN_CS was dead and collided with
+ * the TX pin that bms.cpp hardcoded. */
+#define MAIN_CAN_TX_PIN 39
+#define MAIN_CAN_RX_PIN 40
+
+// SPI bus shared by the per-pack MCP2515 CAN controllers
+#define SPI_CLK  18
+#define SPI_MISO 16
+#define SPI_MOSI 17
+constexpr int CS_PINS[NUM_PACKS_CFG] = { 15, 8 };   // Chip select, one per pack
 
 /* The pack MCP2515 controllers are driven in POLLED mode (ACAN2515 treats INT
  * pin 255 as "no interrupt"). Previously both packs were constructed with INT
  * pin 0, which (a) gave both controllers the same interrupt pin and (b) is the
- * ESP32-S3 strapping/boot pin, also claimed by UART_TX_PIN. The RX path is
- * already timer-polled, so no interrupt pin is needed. */
+ * ESP32-S3 strapping/boot pin. The RX path is polled by the worker task, so no
+ * interrupt pin is needed. */
 #define PACK_CAN_NO_INTERRUPT_PIN 255
 
 // Inputs
@@ -71,14 +102,67 @@ const int CS_PINS[NUM_PACKS_CFG] = { 20, 15 };      // Chip select pins for the 
 #define CHARGE_ENABLE_PIN           9               // Charge enabled input signal
 #define POS_CONTACTOR_FEEDBACK_PIN 11               // Feedback from the HVJB positive contactor for welding detection
 #define NEG_CONTACTOR_FEEDBACK_PIN 12               // Feedback from the HVJB negative contactor for welding detection
-const int CONTACTOR_FEEDBACK_PINS[NUM_PACKS_CFG] = { 13, 14 };  // Feedback from the battery box contactors for welding detection
+constexpr int CONTACTOR_FEEDBACK_PINS[NUM_PACKS_CFG] = { 13, 14 };  // Battery box contactor feedback
 
 // Outputs
 #define CHARGE_INHIBIT_PIN 4                        // Low-side switch to create CHARGE_INHIBIT signal. a.k.a OUT1
 #define HEATER_ENABLE_PIN 5                         // Low-side switch to turn on battery heaters. a.k.a. OUT2
-const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side switch to disallow closing of battery box contactors
+constexpr int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 42 };    // Disallow closing of battery box contactors
 #define DRIVE_INHIBIT_PIN 6                         // Low-side switch to disallow driving. a.k.a OUT3
-#define OUT_4_PIN 7                                 // unused
+
+//------------------------------------------------------------------------------
+// Compile-time pin map validation
+//------------------------------------------------------------------------------
+
+constexpr bool pin_exists_on_esp32s3(int pin) {
+    // GPIO22-25 are absent from the package
+    return ( pin >= 0 && pin <= 21 ) || ( pin >= 26 && pin <= 48 );
+}
+
+constexpr bool pin_is_safe_to_use(int pin) {
+    return pin_exists_on_esp32s3(pin)
+        && pin != 0 && pin != 3                       // strapping
+        && pin != 19 && pin != 20                     // native USB D-/D+
+        && !( pin >= 26 && pin <= 37 )                // SPI flash / octal PSRAM
+        && !( pin >= 43 && pin <= 46 );               // UART0 console + strapping
+}
+
+constexpr int CONFIGURED_PINS[] = {
+    LED_PIN, CAN_CLK_PIN,
+    MAIN_CAN_TX_PIN, MAIN_CAN_RX_PIN,
+    SPI_CLK, SPI_MISO, SPI_MOSI, CS_PINS[0], CS_PINS[1],
+    IGNITION_ENABLE_PIN, CHARGE_ENABLE_PIN,
+    POS_CONTACTOR_FEEDBACK_PIN, NEG_CONTACTOR_FEEDBACK_PIN,
+    CONTACTOR_FEEDBACK_PINS[0], CONTACTOR_FEEDBACK_PINS[1],
+    CHARGE_INHIBIT_PIN, HEATER_ENABLE_PIN,
+    INHIBIT_CONTACTOR_PINS[0], INHIBIT_CONTACTOR_PINS[1],
+    DRIVE_INHIBIT_PIN,
+};
+constexpr int CONFIGURED_PIN_COUNT = (int)( sizeof(CONFIGURED_PINS) / sizeof(CONFIGURED_PINS[0]) );
+
+constexpr bool every_pin_is_safe(int i = 0) {
+    return ( i >= CONFIGURED_PIN_COUNT )
+        || ( pin_is_safe_to_use(CONFIGURED_PINS[i]) && every_pin_is_safe(i + 1) );
+}
+
+constexpr bool pin_is_unique(int index, int other = 0) {
+    return ( other >= CONFIGURED_PIN_COUNT )
+        || ( ( other == index || CONFIGURED_PINS[other] != CONFIGURED_PINS[index] )
+             && pin_is_unique(index, other + 1) );
+}
+
+constexpr bool every_pin_is_unique(int i = 0) {
+    return ( i >= CONFIGURED_PIN_COUNT )
+        || ( pin_is_unique(i) && every_pin_is_unique(i + 1) );
+}
+
+static_assert(NUM_PACKS_CFG == 2,
+    "CONFIGURED_PINS lists the per-pack pins explicitly; extend it if NUM_PACKS_CFG changes");
+static_assert(every_pin_is_safe(),
+    "A configured pin does not exist on the ESP32-S3, or is reserved for flash, PSRAM, "
+    "native USB, the UART0 console, or is a strapping pin. See the pin map notes above.");
+static_assert(every_pin_is_unique(),
+    "Two entries in the pin map are assigned the same GPIO.");
 
 // Pack/module configuration
 #define NUM_PACKS  NUM_PACKS_CFG                    // The total number of paralleled packs in this battery

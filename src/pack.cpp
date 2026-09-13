@@ -282,22 +282,6 @@ bool BatteryPack::send_frame(CANMessage *frame) {
     return false;
 }
 
-void BatteryPack::set_pack_error_status(int newErrorStatus) {
-    errorStatus = newErrorStatus;
-}
-
-int BatteryPack::get_pack_error_status() {
-    return errorStatus;
-}
-
-void BatteryPack::set_pack_balance_status(int newBalanceStatus) {
-    balanceStatus = newBalanceStatus;
-}
-
-int BatteryPack::get_pack_balance_status() {
-    return balanceStatus;
-}
-
 /* Return true if it's time for the pack to be balanced.
  *
  * Balancing works by sending the lowest cell voltage as a target in bytes 0-1
@@ -416,46 +400,54 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
 
     switch (messageId) {
         case 0x000:
-            set_pack_error_status(frame->data[0] + (frame->data[1] << 8) + (frame->data[2] << 16) + (frame->data[3] << 24));
-            set_pack_balance_status((frame->data[5] << 8) + frame->data[4]);
+            /* Per module: this frame is 0x100 | moduleId, so the status it
+             * carries belongs to that module alone. Storing it pack-wide meant
+             * the last module to report won, and one module reporting a balance
+             * status suppressed voltage capture for the whole pack. */
+            modules[moduleId].set_error_status( (uint32_t)frame->data[0]
+                                              | ( (uint32_t)frame->data[1] <<  8 )
+                                              | ( (uint32_t)frame->data[2] << 16 )
+                                              | ( (uint32_t)frame->data[3] << 24 ) );
+            modules[moduleId].set_balance_status( (uint32_t)frame->data[4]
+                                                | ( (uint32_t)frame->data[5] << 8 ) );
             break;
         case 0x020:
-            if ( get_pack_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 ) {
                 modules[moduleId].set_cell_voltage(0, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(1, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(2, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x030:
-            if ( get_pack_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 ) {
                 modules[moduleId].set_cell_voltage(3, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(4, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(5, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x040:
-            if ( get_pack_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 ) {
                 modules[moduleId].set_cell_voltage(6, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(7, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(8, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x050:
-            if ( get_pack_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 ) {
                 modules[moduleId].set_cell_voltage(9, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(10, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(11, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x060:
-            if ( get_pack_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 ) {
                 modules[moduleId].set_cell_voltage(12, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(13, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(14, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x070:
-            if ( get_pack_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 ) {
                 modules[moduleId].set_cell_voltage(15, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
             }
             break;
