@@ -39,6 +39,13 @@ class BatteryModule {
       uint16_t cellVoltage[CELLS_PER_MODULE];    // Voltages of each cell, stored in mV
       int8_t cellTemperature[TEMPS_PER_MODULE];  // Temperatures of each cell (-127 == no reading yet)
       bool allModuleDataPopulated = false;       // True when we have voltage/temp information for all cells
+      /* Bit per voltage message group actually received and stored. Population
+       * used to be inferred from "no cell reads 0 mV", which meant a genuinely
+       * dead cell sitting at 0 kept its module permanently unpopulated -- and
+       * therefore invisible to every min/max and to has_dead_cell(), so the
+       * fault was hidden rather than raised. */
+      uint8_t voltageGroupsSeen = 0;
+      bool hasReported = false;                  // has this module ever sent us anything
       /* Reported by this module in its 0x10X status frame. Held per module
        * because the frame is per module: these used to be written into
        * pack-level fields, so the last module to report won and one module
@@ -72,6 +79,7 @@ class BatteryModule {
       uint32_t get_balance_status() { return balanceStatus; }
       void set_error_status(uint32_t status) { errorStatus = status; }
       uint32_t get_error_status() { return errorStatus; }
+      void note_voltage_group(int messageId);
       bool all_module_data_populated();
       void check_if_module_data_is_populated();
       bool is_alive();
@@ -82,7 +90,6 @@ class BatteryModule {
       int8_t get_lowest_temperature();
       int8_t get_highest_temperature();
       bool has_temperature_sensor_over_max();
-      bool temperature_at_warning_level();
 
 };
 

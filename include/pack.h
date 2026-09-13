@@ -59,6 +59,7 @@ class BatteryPack {
       uint8_t getcheck(CANMessage &msg, int moduleId);  // moduleId, NOT pack id
       int8_t get_module_liveness(int8_t moduleId);
       bool is_alive();
+      bool all_modules_populated();
       void request_data();
       void read_message();
       /* Pack CAN controllers run in polled mode; this wakes the ACAN2515
@@ -82,7 +83,6 @@ class BatteryPack {
       bool has_empty_cell();
       uint16_t get_highest_cell_voltage();
       bool has_full_cell();
-      void set_cell_voltage(int moduleIndex, int cellIndex, uint16_t newCellVoltage);
       void decode_voltages(CANMessage *frame);
       void recalculate_cell_delta();
       void process_voltage_update();
@@ -151,6 +151,11 @@ class BatteryPack {
 
       bool inStartup = true;
       uint8_t modulePollingCycle = 0;
+      /* One module is polled per call so the sweep is spread across ticks
+       * rather than blasting every module back to back. */
+      int nextModuleToPoll = 0;
+      bool balancingThisSweep = false;
+      bool haveTemperatureBaseline = false;
       CANMessage pollModuleFrame;
 
 

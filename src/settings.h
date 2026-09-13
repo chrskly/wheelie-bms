@@ -202,6 +202,11 @@ static_assert(every_pin_is_unique(),
 #define CELL_DELTA_WARN_THRESHOLD 20                // If the cell delta is greater than this value, then raise a warning.
 #define CELL_DELTA_ALARM_THRESHOLD 200              // If the cell delta is greater than this value, then raise an alarm.
 
+/* Stored in place of a temperature when no sensor is fitted in that slot. The
+ * module reports a raw count of 0 for an unpopulated slot, which decodes to
+ * -40 C and would otherwise look like a real, very cold reading. */
+#define NO_TEMPERATURE_READING (-127)
+
 /* Sentinel returned by the cell-voltage getters when no module has reported
  * yet. Deliberately above any real reading so a "lowest cell" search works. */
 #define NO_CELL_VOLTAGE_READING 10000
@@ -289,6 +294,13 @@ static_assert(every_pin_is_unique(),
  * multiple of BMS_WORKER_TICK_MS. Set to 0 to disable. Useful during hardware
  * bring-up; turn it off once the bus is trusted. */
 #define STATUS_PRINT_INTERVAL_MS 10000
+
+/* Include every cell voltage in the status print. This is ~200 numbers, close
+ * to a kilobyte, which at 115200 baud blocks the worker task for most of a
+ * tenth of a second -- long enough to stop draining CAN and overflow the
+ * driver's receive buffer. Off by default; turn it on deliberately and accept
+ * that module data will be dropped while it prints. */
+#define STATUS_PRINT_CELL_DETAIL 0
 
 /* The single task that runs all periodic BMS work. Priority sits above the
  * idle task and below the ACAN2515 driver task (16), which must stay

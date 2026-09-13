@@ -135,7 +135,20 @@ uint8_t BatteryPack::getcheck(CANMessage &msg, int moduleId) {
 }
 
 int8_t BatteryPack::get_module_liveness(int8_t moduleId) {
+    // Modules beyond numModules were never init()ed, so do not read them
+    if ( moduleId < 0 || moduleId >= numModules ) {
+        return 0;
+    }
     return modules[moduleId].is_alive();
+}
+
+bool BatteryPack::all_modules_populated() {
+    for ( int m = 0; m < numModules; m++ ) {
+        if ( !modules[m].all_module_data_populated() ) {
+            return false;
+        }
+    }
+    return numModules > 0;
 }
 
 bool BatteryPack::is_alive() {
@@ -166,13 +179,28 @@ bool BatteryPack::is_alive() {
  *   byte 7 : checksum
  */
 void BatteryPack::request_data() {
-    // Counter that cycles from 0x0 to 0xE
-    if ( modulePollingCycle == 0xF ) {
-        modulePollingCycle = 0;
+    if ( numModules <= 0 ) {
+        return;
     }
-    update_balance_state();
-    const bool balancing = balancing_is_active();
-    for ( int m = 0; m < numModules; m++ ) {
+
+    /* Start of a sweep: advance the polling cycle and re-evaluate balancing
+     * once, so every module in the sweep gets a consistent command. */
+    if ( nextModuleToPoll == 0 ) {
+        if ( modulePollingCycle == 0xF ) {
+            modulePollingCycle = 0;
+        }
+        update_balance_state();
+        balancingThisSweep = balancing_is_active();
+    }
+    const bool balancing = balancingThisSweep;
+
+    /* ONE module per call. The reference implementation puts a delay(2) between
+     * module polls; sending all of them back to back both ignores that spacing
+     * and blocks this task while the frames are queued. Spreading the sweep
+     * across ticks gives the same spacing without blocking, and lets the CAN
+     * receive path keep draining in between. */
+    {
+        const int m = nextModuleToPoll;
         pollModuleFrame.id = 0x080 | (m);
         pollModuleFrame.len = 8;
         if ( balancing ) {
@@ -206,11 +234,15 @@ void BatteryPack::request_data() {
             printf("[pack%d][request_data] ERROR sending poll message to module %d\n", id, m);
         }
     }
-    if ( inStartup && modulePollingCycle == 2 ) {
-        inStartup = false;
+
+    nextModuleToPoll++;
+    if ( nextModuleToPoll >= numModules ) {
+        nextModuleToPoll = 0;
+        if ( inStartup && modulePollingCycle == 2 ) {
+            inStartup = false;
+        }
+        modulePollingCycle++;
     }
-    modulePollingCycle++;
-    return;
 }
 
 /*
@@ -296,6 +328,13 @@ bool BatteryPack::send_frame(CANMessage *frame) {
  */
 bool BatteryPack::should_start_balancing() {
     if ( !CELL_BALANCING_ENABLED ) {
+        return false;
+    }
+    /* Every module must have reported first. Balancing discards readings, so
+     * starting before a late module has populated would keep it unpopulated
+     * until the next rest window -- and its pack would hold CI_STARTUP that
+     * whole time. */
+    if ( !all_modules_populated() ) {
         return false;
     }
     const uint16_t highest = get_highest_cell_voltage();
@@ -393,6 +432,14 @@ float BatteryPack::get_voltage() {
 
 // Update the pack voltage value by summing all of the cell voltages
 void BatteryPack::recalculate_total_voltage() {
+    /* Summing modules that have not reported yet counts them as 0 V, which
+     * understates the pack and then feeds the contactor comparisons. Report
+     * 0 (== "no reading", which the callers already guard for) until the whole
+     * pack has reported. */
+    if ( !all_modules_populated() ) {
+        voltage = 0.0f;
+        return;
+    }
     float newVoltage = 0;
     for ( int m = 0; m < numModules; m++ ) {
         newVoltage += modules[m].get_voltage();
@@ -450,11 +497,6 @@ bool BatteryPack::has_full_cell() {
     return false;
 }
 
-// Update the value for the voltage of an individual cell in a pack
-void BatteryPack::set_cell_voltage(int moduleId, int cellIndex, uint16_t newCellVoltage) {
-    modules[moduleId].set_cell_voltage(cellIndex, newCellVoltage);
-}
-
 // Extract voltage readings from CAN message and update stored values
 void BatteryPack::decode_voltages(CANMessage *frame) {
     int messageId = (frame->id & 0x0F0);
@@ -491,6 +533,7 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
                 modules[moduleId].set_cell_voltage(0, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(1, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(2, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
+                modules[moduleId].note_voltage_group(messageId);
             }
             break;
         case 0x030:
@@ -498,6 +541,7 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
                 modules[moduleId].set_cell_voltage(3, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(4, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(5, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
+                modules[moduleId].note_voltage_group(messageId);
             }
             break;
         case 0x040:
@@ -505,6 +549,7 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
                 modules[moduleId].set_cell_voltage(6, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(7, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(8, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
+                modules[moduleId].note_voltage_group(messageId);
             }
             break;
         case 0x050:
@@ -512,6 +557,7 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
                 modules[moduleId].set_cell_voltage(9, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(10, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(11, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
+                modules[moduleId].note_voltage_group(messageId);
             }
             break;
         case 0x060:
@@ -519,11 +565,13 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
                 modules[moduleId].set_cell_voltage(12, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(13, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(14, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
+                modules[moduleId].note_voltage_group(messageId);
             }
             break;
         case 0x070:
             if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(15, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
+                modules[moduleId].note_voltage_group(messageId);
             }
             break;
         default:
@@ -645,14 +693,24 @@ void BatteryPack::decode_temperatures(CANMessage *temperatureMessageFrame) {
 
     modules[moduleId].heartbeat();
     for ( int t = 0; t < numTemperatureSensorsPerModule; t++ ) {
+        const uint8_t raw = temperatureMessageFrame->data[t];
+
+        /* A raw count of zero means no sensor is fitted in that slot. The
+         * reference implementation guards on the decoded value being > -40 for
+         * exactly this reason. Storing it as a real -40 C reading would drag
+         * the pack minimum down, permanently assert too_cold_to_charge(), and
+         * latch an out-of-range internal error. Record it as "no reading"
+         * instead, which the min/max getters already skip. */
+        if ( raw == 0 ) {
+            modules[moduleId].update_temperature(t, NO_TEMPERATURE_READING);
+            continue;
+        }
+
         /* Raw counts are offset by 40. Computed in int and clamped to the
          * int8_t the module stores: the old code built a float and passed it to
          * a uint8_t parameter, so every reading below 40 counts (i.e. below
          * 0 C) was an out-of-range conversion, which is undefined behaviour. */
-        int reading = (int)temperatureMessageFrame->data[t] - 40;
-        if ( reading < -128 ) {
-            reading = -128;
-        }
+        int reading = (int)raw - 40;
         if ( reading > 127 ) {
             reading = 127;
         }
@@ -661,11 +719,23 @@ void BatteryPack::decode_temperatures(CANMessage *temperatureMessageFrame) {
 }
 
 void BatteryPack::process_temperature_update() {
-    if ( ( get_clock_ms() - lastTemperatureSampleTime ) > PACK_TEMP_SAMPLE_INTERVAL_MS ) {
-        lastTemperatureSampleTime = get_clock_ms();
-        temperatureDelta = get_highest_temperature() - lastTemperatureSample;
-        lastTemperatureSample = get_highest_temperature();
+    if ( ( get_clock_ms() - lastTemperatureSampleTime ) <= PACK_TEMP_SAMPLE_INTERVAL_MS ) {
+        return;
     }
+    const int8_t highest = get_highest_temperature();
+    lastTemperatureSampleTime = get_clock_ms();
+
+    /* The first sample only establishes the baseline. Differencing against the
+     * initial 0 made a 25 C pack look like it was rising at 25 C/minute, which
+     * derated the charge current straight to zero. */
+    if ( !haveTemperatureBaseline ) {
+        lastTemperatureSample = highest;
+        temperatureDelta = 0;
+        haveTemperatureBaseline = true;
+        return;
+    }
+    temperatureDelta = highest - lastTemperatureSample;
+    lastTemperatureSample = highest;
 }
 
 

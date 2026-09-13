@@ -37,9 +37,7 @@ class Battery {
       int numPacks = NUM_PACKS;                // Number of battery packs in this battery
       uint32_t voltage = 0;                    // Total voltage of whole battery
       uint16_t lowestCellVoltage = 0;          // Voltage of cell with lowest voltage across whole battery
-      uint16_t activePacks_lowestCellVoltage = 0;  // Lowest cell voltage across packs that are not inhibited
       uint16_t highestCellVoltage = 0;         // Voltage of cell with highest voltage across whole battery
-      uint16_t activePacks_highestCellVoltage = 0; // Highest cell voltage across packs that are not inhibited
       uint32_t minimumBatteryVoltage = 0;      // Lowest permitted voltage of the whole battery
       uint32_t maximumBatteryVoltage = 0;      // Highest permitted voltage of the whole battery
       float lowestSensorTemperature = 0;       //
@@ -49,6 +47,8 @@ class Battery {
        * getters and every caller in a given cycle sees the same answer. */
       bool tooHotLatched = false;
       bool tooColdToChargeLatched = false;
+      uint64_t lastTemperatureUpdate = 0;      // get_clock_ms() of the last temperature frame
+      bool haveTemperatureData = false;
       Bms* bms = nullptr;
 
    public:
@@ -97,6 +97,7 @@ class Battery {
       void update_lowest_sensor_temperature();
       int8_t get_lowest_sensor_temperature();
       void process_temperature_update();
+      bool temperature_data_is_stale();
       void update_temperature_latches();
       bool too_cold_to_charge();
       uint16_t get_max_charge_current_by_temperature();
@@ -107,7 +108,6 @@ class Battery {
       void enable_inhibit_contactor_close();
       void disable_inhibit_contactor_close();
       bool one_or_more_contactors_inhibited();
-      bool all_contactors_inhibited();
       void reevaluate_contactor_inhibition_for_drive();
       void reevaluate_contactor_inhibition_for_charge();
       /* Applies AND withdraws the dead-cell hold, so a pack whose cell recovers

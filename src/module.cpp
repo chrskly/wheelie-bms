@@ -39,7 +39,7 @@ BatteryModule::BatteryModule() {
         cellVoltage[c] = 0;
     }
     for ( int t = 0; t < TEMPS_PER_MODULE; t++ ) {
-        cellTemperature[t] = -127;
+        cellTemperature[t] = NO_TEMPERATURE_READING;
     }
 }
 
@@ -73,7 +73,7 @@ void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTem
     }
     numTemperatureSensors = _numTemperatureSensors;
     for ( int t = 0; t < TEMPS_PER_MODULE; t++ ) {
-        cellTemperature[t] = -127;
+        cellTemperature[t] = NO_TEMPERATURE_READING;
     }
     allModuleDataPopulated = false;
 }
@@ -93,6 +93,9 @@ void BatteryModule::print() {
     printf("  %d : ", id);
     for ( int c = 0; c < numCells; c++ ) {
         printf("%u ", cellVoltage[c]);
+    }
+    if ( errorStatus != 0 ) {
+        printf(" ERR:0x%08X", (unsigned int)errorStatus);
     }
     printf("\n");
 }
@@ -115,7 +118,7 @@ uint32_t BatteryModule::get_voltage() {
 
 // Return the voltage of the lowest cell voltage in the module
 uint16_t BatteryModule::get_lowest_cell_voltage() {
-    uint16_t lowestCellVoltage = 10000;
+    uint16_t lowestCellVoltage = NO_CELL_VOLTAGE_READING;
     for ( int c = 0; c < numCells; c++ ) {
         if ( cellVoltage[c] < lowestCellVoltage ) {
             lowestCellVoltage = cellVoltage[c];
@@ -201,26 +204,30 @@ bool BatteryModule::all_module_data_populated() {
 }
 
 void BatteryModule::check_if_module_data_is_populated() {
-    bool voltageMissing = false;
-    for ( int c = 0; c < numCells; c++ ) {
-        if ( cellVoltage[c] == 0 ) {
-            voltageMissing = true;
-        }
-    }
-    bool temperatureMissing = false;
+    /* Every voltage group received and stored. Testing for "no cell is 0 mV"
+     * instead meant a dead cell hid its own module. */
+    const uint8_t allGroups = 0x3F;   // six groups, 0x020 through 0x070
+    const bool voltageMissing = ( voltageGroupsSeen != allGroups );
+    /* At least ONE valid temperature, not all of them. Slots with no sensor
+     * fitted report a raw count of 0 and are stored as NO_TEMPERATURE_READING,
+     * which will never change -- requiring every slot meant such a module could
+     * never become populated, so it was excluded from every min/max, its pack
+     * never withdrew CI_STARTUP, and the contactors stayed inhibited forever. */
+    bool haveATemperature = false;
     for ( int t = 0; t < numTemperatureSensors; t++ ) {
-        if ( cellTemperature[t] < -126 ) {
-            temperatureMissing = true;
+        if ( cellTemperature[t] > NO_TEMPERATURE_READING ) {
+            haveATemperature = true;
+            break;
         }
     }
-    allModuleDataPopulated = !voltageMissing && !temperatureMissing;
+    allModuleDataPopulated = !voltageMissing && haveATemperature;
 }
 
 bool BatteryModule::is_alive() {
-    /* lastHeartbeat == 0 means we have never heard from this module at all.
-     * Treating that as alive gave a MODULE_TTL_MS window after boot in which
-     * the module looked healthy while having reported nothing. */
-    if ( lastHeartbeat == 0 ) {
+    /* A module we have never heard from is not alive. Tracked with an explicit
+     * flag rather than "lastHeartbeat == 0", which misread a heartbeat that
+     * happened to land on millisecond zero. */
+    if ( !hasReported ) {
         return false;
     }
     return ( get_clock_ms() - lastHeartbeat ) < MODULE_TTL_MS;
@@ -228,6 +235,16 @@ bool BatteryModule::is_alive() {
 
 void BatteryModule::heartbeat() {
     lastHeartbeat = get_clock_ms();
+    hasReported = true;
+}
+
+/* Record that a voltage message group was received and its values stored. */
+void BatteryModule::note_voltage_group(int messageId) {
+    const int group = ( messageId >> 4 ) - 2;   // 0x020 -> 0 ... 0x070 -> 5
+    if ( group < 0 || group > 5 ) {
+        return;
+    }
+    voltageGroupsSeen |= (uint8_t)( 1u << group );
 }
 
 //// ----
@@ -278,17 +295,4 @@ int8_t BatteryModule::get_highest_temperature() {
 // Return true if any temperature sensor is over the max temperature
 bool BatteryModule::has_temperature_sensor_over_max() {
     return ( get_highest_temperature() > MAXIMUM_TEMPERATURE );
-}
-
-
-
-// returns true when any temperature sensor in this module is over the warning
-// level, but below the critical level.
-bool BatteryModule::temperature_at_warning_level() {
-    for ( int t = 0; t < numTemperatureSensors; t++ ) {
-        if ( cellTemperature[t] >= WARNING_TEMPERATURE && cellTemperature[t] < MAXIMUM_TEMPERATURE ) {
-            return true;
-        }
-    }
-    return false;
 }

@@ -52,6 +52,7 @@ enum InhibitReason {
     R_SHUNT_UNRESPONSIVE,
     R_CRITICAL_FAULT,
     R_DEAD_CELL,
+    R_STARTUP,          // held from power-on until the battery reports
 };
 
 /* Bit for a reason within an inhibit mask. R_NONE occupies no bit. */

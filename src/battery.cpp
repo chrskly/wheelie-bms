@@ -75,12 +75,6 @@ void Battery::initialise(Bms* _bms) {
 
 }
 
-/*
- * Begin polling the packs. Separate from initialise() so that no timer callback
- * can touch a pack before every pack has been built.
- */
-
-//
 int Battery::print() {
     for ( int p = 0; p < numPacks; p++ ) {
         packs[p].print();
@@ -243,16 +237,8 @@ void Battery::process_voltage_update() {
 // Recompute the lowest cell voltage across the whole battery
 void Battery::recalculate_lowest_cell_voltage() {
     uint16_t newLowestCellVoltage = NO_CELL_VOLTAGE_READING;
-    uint16_t activePacks_newLowestCellVoltage = NO_CELL_VOLTAGE_READING;
     for ( int p = 0; p < numPacks; p++ ) {
-        uint16_t packLowestCellVoltage = packs[p].get_lowest_cell_voltage();
-        // Active packs
-        if ( !packs[p].contactors_are_inhibited() ) {
-            if ( packLowestCellVoltage < activePacks_newLowestCellVoltage ) {
-                activePacks_newLowestCellVoltage = packLowestCellVoltage;
-            }
-        }
-        // All packs
+        const uint16_t packLowestCellVoltage = packs[p].get_lowest_cell_voltage();
         if ( packLowestCellVoltage < newLowestCellVoltage ) {
             newLowestCellVoltage = packLowestCellVoltage;
         }
@@ -273,7 +259,6 @@ void Battery::recalculate_lowest_cell_voltage() {
         }
     }
     lowestCellVoltage = newLowestCellVoltage;
-    activePacks_lowestCellVoltage = activePacks_newLowestCellVoltage;
 }
 
 uint16_t Battery::get_lowest_cell_voltage() {
@@ -281,10 +266,13 @@ uint16_t Battery::get_lowest_cell_voltage() {
 }
 
 // Return true if any cell in the battery is below the minimum voltage level
+/* Reports across ALL packs, including inhibited ones. Skipping inhibited packs
+ * meant this was unconditionally false at power-on, when every pack is held by
+ * CI_STARTUP -- and it hid a genuinely empty cell in a pack that happened to be
+ * inhibited for an unrelated reason. */
 bool Battery::has_empty_cell() {
     for ( int p = 0; p < numPacks; p++ ) {
-        // Ignore packs with inhibited contactors
-        if ( packs[p].has_empty_cell() && !packs[p].contactors_are_inhibited() ) {
+        if ( packs[p].has_empty_cell() ) {
             return true;
         }
     }
@@ -296,16 +284,8 @@ bool Battery::has_empty_cell() {
 // Recompute the highest cell voltage
 void Battery::recalculate_highest_cell_voltage() {
     uint16_t newHighestCellVoltage = 0;
-    uint16_t activePacks_newHighestCellVoltage = 0;
     for ( int p = 0; p < numPacks; p++ ) {
-        uint16_t packHighestCellVoltage = packs[p].get_highest_cell_voltage();
-        // Active packs
-        if ( !packs[p].contactors_are_inhibited() ) {
-            if ( packHighestCellVoltage > activePacks_newHighestCellVoltage ) {
-                activePacks_newHighestCellVoltage = packHighestCellVoltage;
-            }
-        }
-        // All packs
+        const uint16_t packHighestCellVoltage = packs[p].get_highest_cell_voltage();
         if ( packHighestCellVoltage > newHighestCellVoltage ) {
             newHighestCellVoltage = packHighestCellVoltage;
         }
@@ -323,7 +303,6 @@ void Battery::recalculate_highest_cell_voltage() {
         }
     }
     highestCellVoltage = newHighestCellVoltage;
-    activePacks_highestCellVoltage = activePacks_newHighestCellVoltage;
 }
 
 uint16_t Battery::get_highest_cell_voltage() {
@@ -331,10 +310,10 @@ uint16_t Battery::get_highest_cell_voltage() {
 }
 
 // Return true if any cell in the battery is below the minimum voltage level
+// See has_empty_cell(): reports across all packs, inhibited or not.
 bool Battery::has_full_cell() {
     for ( int p = 0; p < numPacks; p++ ) {
-        // Ignore packs with inhibited contactors
-        if ( packs[p].has_full_cell() && !packs[p].contactors_are_inhibited() ) {
+        if ( packs[p].has_full_cell() ) {
             return true;
         }
     }
@@ -481,6 +460,24 @@ void Battery::process_temperature_update() {
     update_lowest_sensor_temperature();
     update_highest_sensor_temperature();
     update_temperature_latches();
+    lastTemperatureUpdate = get_clock_ms();
+    haveTemperatureData = true;
+}
+
+/*
+ * True when no temperature frame has arrived recently.
+ *
+ * too_hot() and too_cold_to_charge() read latched values that are only
+ * refreshed by an incoming temperature frame, so if those frames stop the
+ * latches simply keep their last value -- and "not too hot" is the fail-unsafe
+ * direction. Module liveness catches a module that goes silent entirely, but
+ * not one that keeps sending voltages and stops sending temperatures.
+ */
+bool Battery::temperature_data_is_stale() {
+    if ( !haveTemperatureData ) {
+        return true;
+    }
+    return ( get_clock_ms() - lastTemperatureUpdate ) > MODULE_TTL_MS;
 }
 
 
@@ -490,7 +487,12 @@ void Battery::process_temperature_update() {
 //
 //// ----
 
+/* Stale temperature data reads as too cold to charge: charging is the
+ * temperature-dependent operation, and doing it blind is not acceptable. */
 bool Battery::too_cold_to_charge() {
+    if ( temperature_data_is_stale() ) {
+        return true;
+    }
     return tooColdToChargeLatched;
 }
 
@@ -608,15 +610,6 @@ bool Battery::one_or_more_contactors_inhibited() {
         }
     }
     return false;
-}
-
-bool Battery::all_contactors_inhibited() {
-    for ( int p = 0; p < numPacks; p++ ) {
-        if ( !packs[p].contactors_are_inhibited() ) {
-            return false;
-        }
-    }
-    return true;
 }
 
 /*

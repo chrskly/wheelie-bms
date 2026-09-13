@@ -75,6 +75,13 @@ void health_check_callback() {
         }
     }
 
+    /* Withdraw the power-on hold once every module has reported. Until then
+     * both inhibits stay asserted no matter what else the state machine does. */
+    if ( battery.is_alive() ) {
+        bms.disable_charge_inhibit("[HC] battery reporting", R_STARTUP);
+        bms.disable_drive_inhibit("[HC] battery reporting", R_STARTUP);
+    }
+
     // Module liveness
     if ( ! battery.is_alive() ) {
         bms.send_event(E_MODULE_UNRESPONSIVE);
@@ -629,8 +636,13 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     shunt = _shunt;
     internalErrorFlags = 0;
     statusLight = StatusLight(this);
-    chargeInhibitReasons = 0;
-    driveInhibitReasons = 0;
+    /* Io::init() physically asserts both inhibits as the fail-safe power-on
+     * state. Seed the reason masks to match: with empty masks the first
+     * disable_*_inhibit() call of the first health check would find nothing
+     * holding the inhibit and release it, dropping the fail-safe state before
+     * a single cell voltage had been read. Withdrawn once the battery reports. */
+    chargeInhibitReasons = inhibit_reason_bit(R_STARTUP);
+    driveInhibitReasons = inhibit_reason_bit(R_STARTUP);
 
     printf("[bms][init] setting up main CAN port\n");
     ACAN_ESP32_Settings settings(500 * 1000);
@@ -696,7 +708,9 @@ static void bms_worker_task(void* /*pvParameters*/) {
         }
 
         // Every 100 ms
-        if ( ( tick % 20 ) ==  0 ) { battery.request_data(); }
+        /* request_data() sends ONE module poll per call, so it is called often
+         * enough to complete a sweep in about 90ms: 6 modules x 3 ticks x 5ms. */
+        if ( ( tick % 3 ) == 0 ) { battery.request_data(); }
         if ( ( tick % 20 ) == 10 ) { health_check_callback(); }
         if ( ( tick % 20 ) ==  5 ) { bms.led_blink(); }
 
@@ -805,7 +819,9 @@ void Bms::print() {
         get_state_name(get_state()), soc, drv_inh.c_str(), chg_inh.c_str(), ign.c_str(), chg_en.c_str());
     printf(" V:%u, VMax:%d, VMin:%d\n", (unsigned int)(battery->get_voltage()/1000), Vmax, Vmin );
     printf(" TMax:%d, TMin:%d\n", Tmax, Tmin );
+#if STATUS_PRINT_CELL_DETAIL
     battery->print();
+#endif
 }
 
 // Watchdog
@@ -820,8 +836,8 @@ void Bms::set_watchdog_reboot(bool value) {
  * message names the most important thing currently holding the inhibit on. */
 static const InhibitReason kReasonsBySeverity[] = {
     R_CRITICAL_FAULT, R_MODULE_UNRESPONSIVE, R_SHUNT_UNRESPONSIVE, R_DEAD_CELL,
-    R_ILLEGAL_STATE_TRANSITION, R_TOO_HOT, R_TOO_COLD, R_BATTERY_EMPTY,
-    R_BATTERY_FULL, R_CHARGING,
+    R_ILLEGAL_STATE_TRANSITION, R_STARTUP, R_TOO_HOT, R_TOO_COLD,
+    R_BATTERY_EMPTY, R_BATTERY_FULL, R_CHARGING,
 };
 
 static int8_t most_severe_reason(uint16_t mask) {
