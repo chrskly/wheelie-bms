@@ -197,9 +197,9 @@ TimerHandle_t limitsMessageTimer = xTimerCreate(
  * byte 1 = error bits
  *   bit 0 = internalError          - something has gone wrong in the BMS
  *   bit 1 = packsImbalanced        - the voltage between two or more packs varies by an unsafe amount
- *   bit 2 = shuntIsDead            - the shunt has not sent a message in SHUNT_TTL seconds
+ *   bit 2 = shuntIsDead            - the shunt has not sent a message in SHUNT_TTL_MS milliseconds
  *   bit 3 = illegalStateTransition - We tried to transistion between states in an illegal way
- *   bit 4 = module(s) dead         - one or more modules have not sent a message in MODULE_TTL seconds
+ *   bit 4 = module(s) dead         - one or more modules have not sent a message in MODULE_TTL_MS milliseconds
  *   bit 5 = 
  *   bit 6 = 
  *   bit 7 = 
@@ -655,7 +655,7 @@ TimerHandle_t handleMainCanMessageTimer = xTimerCreate(
 
 
 
-Bms::Bms(Battery* _battery, Io* _io, Shunt* _shunt) {
+void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     battery = _battery;
     state = &state_standby;
     io = _io;
@@ -687,27 +687,39 @@ Bms::Bms(Battery* _battery, Io* _io, Shunt* _shunt) {
         this->send_frame(&m, true);
     }
 
-    printf("[bms][init] enabling CAN message handlers\n");
+}
+
+/*
+ * Begin the periodic timers. Kept separate from init() so that no callback can
+ * run against a half-built Battery: every one of these touches `battery`, which
+ * used to be a pack array that had not been created yet.
+ */
+void Bms::start() {
+    printf("[bms][start] enabling CAN message handlers\n");
     // limits (out)
-    xTimerStart(limitsMessageTimer, 0);
+    start_timer(limitsMessageTimer, "limitsMessageTimer");
     // bms state (out)
-    xTimerStart(bmsStateMessageTimer, 0);
+    start_timer(bmsStateMessageTimer, "bmsStateMessageTimer");
     // module liveness (out)
-    xTimerStart(moduleLivenessMessageTimer, 0);
-    // can error counters (out)
-    xTimerStart(mainCanErrorCountersMessageTimer, 0);
+    start_timer(moduleLivenessMessageTimer, "moduleLivenessMessageTimer");
+    // main can error counters (out)
+    start_timer(mainCanErrorCountersMessageTimer, "mainCanErrorCountersMessageTimer");
+    // pack can error counters (out)
+    start_timer(sendPackCanErrorCountersMessageTimer, "sendPackCanErrorCountersMessageTimer");
     // soc (out)
-    xTimerStart(sendSocMessageTimer, 0);
+    start_timer(sendSocMessageTimer, "sendSocMessageTimer");
     // status (out)
-    xTimerStart(sendStatusMessageTimer, 0);
+    start_timer(sendStatusMessageTimer, "sendStatusMessageTimer");
     // Alarms (out)
-    xTimerStart(sendAlarmMessageTimer, 0);
+    start_timer(sendAlarmMessageTimer, "sendAlarmMessageTimer");
     // main CAN (in)
-    xTimerStart(handleMainCanMessageTimer, 0);
+    start_timer(handleMainCanMessageTimer, "handleMainCanMessageTimer");
+    // status light
+    start_timer(processLedBlinkTimer, "processLedBlinkTimer");
     // health checks
-    xTimerStart(healthCheckTimer, 0);
+    start_timer(healthCheckTimer, "healthCheckTimer");
     // calculations
-    xTimerStart(calculationsTimer, 0);
+    start_timer(calculationsTimer, "calculationsTimer");
 }
 
 void Bms::set_state(State newState, std::string reason) {
@@ -979,11 +991,11 @@ void Bms::led_blink() {
 
 // Track when the pack voltages match each other
 void Bms::pack_voltages_match_heartbeat() {
-    lastTimePackVoltagesMatched = get_clock();
+    lastTimePackVoltagesMatched = get_clock_ms();
 }
 
 bool Bms::packs_are_imbalanced() {
-    return ( get_clock() - lastTimePackVoltagesMatched ) > PACKS_IMBALANCED_TTL;
+    return ( get_clock_ms() - lastTimePackVoltagesMatched ) > PACKS_IMBALANCED_TTL_MS;
 }
 
 
@@ -1010,8 +1022,7 @@ bool Bms::send_frame(CANMessage* frame, bool doChecksum) {
         //     continue;
         // }
 
-        // MCP2515::ERROR result = this->CAN->sendMessage(frame);
-        bool status = CAN->tryToSend(*frame);
+        const bool status = ACAN_ESP32::can.tryToSend(*frame);
         // mutex_exit(&canMutex);
 
         if ( !status ) {
@@ -1052,8 +1063,7 @@ bool Bms::read_frame(CANMessage* frame) {
         //     increment_can_rx_error_count();
         //     return false;
         // }
-        // MCP2515::ERROR result = this->CAN->readMessage(frame);
-        int result = this->CAN->receive(*frame);
+        const bool received = ACAN_ESP32::can.receive(*frame);
         // mutex_exit(&canMutex);
         // if ( result != MCP2515::ERROR_OK ) {
         //     if ( result == MCP2515::ERROR_FAIL ) {
@@ -1073,13 +1083,13 @@ bool Bms::read_frame(CANMessage* frame) {
         //     }
         //     continue;
         // }
-        // Frame was read, print it out
-        // printf("[bms][read_frame] 0x%03X  [ ", frame->can_id);
-        // for ( int i = 0; i < frame->can_dlc; i++ ) {
-        //     printf("%02X ", frame->data[i]);
-        // }
-        // printf("]\n");
-        return true;
+        /* No frame waiting is the normal case, not an error. Returning true
+         * here unconditionally (as this used to) made every caller parse an
+         * uninitialised CANMessage off the stack. */
+        if ( received ) {
+            return true;
+        }
+        return false;
     }
     // Failed to read after all retries
     return false;

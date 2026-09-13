@@ -47,8 +47,13 @@ class Battery {
 
    public:
       Battery() {};
-      Battery(Io* _io);
-      void initialise(Bms* _bms);
+      /* Two-phase startup, deliberately:
+       *   initialise() builds the packs (each module stores a back-pointer, so
+       *     the packs must be built in place, never copy-assigned);
+       *   start() begins polling. Nothing may run on a timer until every pack
+       *     exists and `bms` is set. */
+      void initialise(Io* _io, Bms* _bms);
+      void start();
       int print();
 
       void request_data();
@@ -104,7 +109,7 @@ class Battery {
       void reevaluate_contactor_inhibition_for_charge();
       void inhibit_contactors_of_packs_with_dead_cells();
 
-      int8_t get_module_liveness_byte(int8_t moduleId);
+      uint8_t get_module_liveness_byte(int8_t moduleId);
       bool is_alive();
       bool contactor_is_welded(uint8_t packId);
 };

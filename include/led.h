@@ -21,7 +21,13 @@
 #ifndef BMS_SRC_INCLUDE_LED_H_
 #define BMS_SRC_INCLUDE_LED_H_
 
+#include <Arduino.h>
+
 class Bms;
+
+/* Defined in led.cpp. Started by Bms::start(); it was previously created and
+ * then never started, so the status light never blinked. */
+extern TimerHandle_t processLedBlinkTimer;
 
 enum LED_MODE {
     STANDBY,

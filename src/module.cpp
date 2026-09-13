@@ -34,7 +34,7 @@
 BatteryModule::BatteryModule() {}
 
 //
-BatteryModule::BatteryModule(int _id, BatteryPack* _pack, int _numCells, int _numTemperatureSensors) {
+void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTemperatureSensors) {
     // printf("Creating module (id:%d, pack:%d, cpm:%d, t:%d)\n", _id, _pack->id, _numCells, _numTemperatureSensors);
     id = _id;
     // Point back to parent pack
@@ -170,15 +170,15 @@ void BatteryModule::check_if_module_data_is_populated() {
             temperatureMissing = true;
         }
     }
-    allModuleDataPopulated = voltageMissing && temperatureMissing;
+    allModuleDataPopulated = !voltageMissing && !temperatureMissing;
 }
 
 bool BatteryModule::is_alive() {
-    return ( ((double)(get_clock() - lastHeartbeat) / CLOCKS_PER_SEC) < MODULE_TTL );
+    return ( get_clock_ms() - lastHeartbeat ) < MODULE_TTL_MS;
 }
 
 void BatteryModule::heartbeat() {
-    lastHeartbeat = get_clock();
+    lastHeartbeat = get_clock_ms();
 }
 
 //// ----

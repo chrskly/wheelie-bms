@@ -34,11 +34,11 @@ Shunt::Shunt() {
 }
 
 void Shunt::heartbeat() {
-    lastHeartbeat = get_clock();
+    lastHeartbeat = get_clock_ms();
 }
 
 bool Shunt::is_dead() {
-    return !( ((double)(get_clock() - lastHeartbeat) / CLOCKS_PER_SEC) < SHUNT_TTL );
+    return ( get_clock_ms() - lastHeartbeat ) > SHUNT_TTL_MS;
 }
 
 int32_t Shunt::get_amps() {

@@ -32,7 +32,14 @@ class Io {
         bool chargeEnable;             // Charger is asking to charge
         int lastInterrupt;
     public:
-        Io();
+        Io() {};
+        /* Configure pins. Safe to call before the rest of the system exists. */
+        void init();
+        /* Attach the ignition / charge-enable interrupts. MUST be called only
+         * once `bms` is fully constructed: both handlers drive the state
+         * machine, and attaching them in Io's constructor meant an edge during
+         * startup ran the state machine through a null state pointer. */
+        void attach_interrupts();
         void enable_drive_inhibit(std::string context);
         void disable_drive_inhibit(std::string context);
         bool drive_is_inhibited();

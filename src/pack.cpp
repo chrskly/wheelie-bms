@@ -26,25 +26,9 @@
 #include "bms.h"
 #include "settings.h"
 
-/*
- * Don't love this, but we need a way to call the CAN ISR for each pack from a
- * single interrupt service routine. This is a bit of a hack, but it works.
- */
-namespace {
-    ACAN2515* packCanPorts[NUM_PACKS] = { nullptr };
-
-    void can_isr_all_packs() {
-        for ( int i = 0; i < NUM_PACKS; i++ ) {
-            if ( packCanPorts[i] != nullptr ) {
-                packCanPorts[i]->isr();
-            }
-        }
-    }
-}
-
 BatteryPack::BatteryPack() {}
 
-BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _contactorFeedbackPin,
+void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _contactorFeedbackPin,
         int _numModules, int _numCellsPerModule, int _numTemperatureSensorsPerModule, Bms* _bms) {
 
     id = _id;
@@ -53,20 +37,22 @@ BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _c
     numTemperatureSensorsPerModule = _numTemperatureSensorsPerModule;
     bms = _bms;
 
-    // Initialise modules
+    // Build the CRC table before anything can call getcheck()
+    crc8.begin();
+
+    // Initialise modules in place so each module's back-pointer is `this`
     for ( int m = 0; m < numModules; m++ ) {
-        modules[m] = BatteryModule(m, this, numCellsPerModule, numTemperatureSensorsPerModule);
+        modules[m].init(m, this, numCellsPerModule, numTemperatureSensorsPerModule);
     }
 
     // Set up dedicated CAN port for communicating with this pack
     printf("[pack%d] creating CAN port\n", id);
-    CAN = new ACAN2515(CANCSPin, SPI, 0);
-    if ( id >= 0 && id < NUM_PACKS ) {
-        packCanPorts[id] = CAN;
-    }
+    CAN = new ACAN2515(CANCSPin, SPI, PACK_CAN_NO_INTERRUPT_PIN);
     ACAN2515Settings settings (QUARTZ_FREQUENCY, 500 * 1000);
     settings.mRequestedMode = ACAN2515Settings::NormalMode;
-    const uint16_t errorCode = CAN->begin(settings, can_isr_all_packs);
+    /* Polled mode: ACAN2515 treats INT 255 as "no interrupt pin" and requires a
+     * NULL ISR. Its ESP32 driver task still runs; poll_can() wakes it. */
+    const uint16_t errorCode = CAN->begin(settings, NULL);
     if ( errorCode != 0 ) {
         printf("[pack%d] ERROR setting up CAN port: %d\n", id, errorCode);
     } else {
@@ -110,8 +96,6 @@ BatteryPack::BatteryPack(int _id, int CANCSPin, int _contactorInhibitPin, int _c
 
     canTxErrorCount = 0;
     canRxErrorCount = 0;
-
-    crc8.begin();
 
     printf("[pack%d] setup complete\n", id);
 }
@@ -212,17 +196,31 @@ void BatteryPack::request_data() {
 }
 
 /*
- * Check for message from battery modules, parse as required. */
+ * Wake the ACAN2515 driver task so it drains the MCP2515 into the driver's
+ * receive buffer. Required because the pack controllers run without an
+ * interrupt pin.
+ */
+void BatteryPack::poll_can() {
+    CAN->poll();
+}
+
+/*
+ * Check for messages from battery modules, parse as required.
+ *
+ * Drains up to READ_FRAMES_PER_CYCLE frames per call rather than one. A single
+ * poll of a 6-module pack produces far more frames than the driver's 32-frame
+ * receive buffer can hold between 5ms service ticks, so reading one at a time
+ * silently dropped most module replies.
+ */
 void BatteryPack::read_message() {
     CANMessage frame;
 
-    // Check for message
-    int result = CAN->receive(frame);
+    for ( int drained = 0; drained < READ_FRAMES_PER_CYCLE; drained++ ) {
 
-    // Return if we don't have a message to process
-    if ( result == 0 ) {
-        return;
-    }
+        // Return when there's nothing left to process
+        if ( !CAN->receive(frame) ) {
+            return;
+        }
 
     // printf("[pack%d][read_message] received message 0x%03X : ", this->id, frame.id);
     // for ( int i = 0; i < frame.can_dlc; i++ ) {
@@ -230,15 +228,16 @@ void BatteryPack::read_message() {
     // }
     // printf("\n");
 
-    // Temperature messages
-    if ( (frame.id & 0xFF0) == 0x180 ) {
-        decode_temperatures(&frame);
-        this->battery->process_temperature_update();
-    }
-    // Voltage messages
-    if (frame.id > 0x99 && frame.id < 0x180) {
-        decode_voltages(&frame);
-        this->battery->process_voltage_update();
+        // Temperature messages
+        if ( (frame.id & 0xFF0) == 0x180 ) {
+            decode_temperatures(&frame);
+            this->battery->process_temperature_update();
+        }
+        // Voltage messages
+        if (frame.id > 0x99 && frame.id < 0x180) {
+            decode_voltages(&frame);
+            this->battery->process_voltage_update();
+        }
     }
 }
 
@@ -254,7 +253,7 @@ bool BatteryPack::send_frame(CANMessage *frame) {
         // }
         // printf("]\n");
 
-        if ( 0 == CAN->tryToSend(*frame) ) {
+        if ( CAN->tryToSend(*frame) ) {
             return true;
         } else {
             printf("[pack%d][send_frame] ERROR sending message to battery pack\n", this->id);
@@ -509,8 +508,8 @@ void BatteryPack::decode_temperatures(CANMessage *temperatureMessageFrame) {
 }
 
 void BatteryPack::process_temperature_update() {
-    if ( ( get_clock() - lastTemperatureSampleTime ) > PACK_TEMP_SAMPLE_INTERVAL ) {
-        lastTemperatureSampleTime = get_clock();
+    if ( ( get_clock_ms() - lastTemperatureSampleTime ) > PACK_TEMP_SAMPLE_INTERVAL_MS ) {
+        lastTemperatureSampleTime = get_clock_ms();
         temperatureDelta = get_highest_temperature() - lastTemperatureSample;
         lastTemperatureSample = get_highest_temperature();
     }

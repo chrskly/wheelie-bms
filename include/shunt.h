@@ -20,9 +20,11 @@
 #ifndef BMS_SRC_INCLUDE_SHUNT_H_
 #define BMS_SRC_INCLUDE_SHUNT_H_
 
+#include <stdint.h>
+
 class Shunt {
     private:
-        clock_t lastHeartbeat;  // Time we last got an update from the ISA Shunt
+        uint64_t lastHeartbeat;  // get_clock_ms() when we last got an update from the ISA Shunt
         int32_t amps;
         int32_t voltage1;
         int32_t voltage2;

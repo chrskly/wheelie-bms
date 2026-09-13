@@ -19,13 +19,14 @@
 
 #include <Arduino.h>
 #include <ACAN2515.h>
+#include <esp_timer.h>
 #include <stdio.h>
 
+#include "util.h"
 
 
-clock_t get_clock() {
-    //return (clock_t) time_us_64() / 10000;
-    return (clock_t) micros() / 10000;
+uint64_t get_clock_ms() {
+    return (uint64_t)(esp_timer_get_time() / 1000);
 }
 
 void zero_frame(CANMessage* frame) {
@@ -37,17 +38,22 @@ void zero_frame(CANMessage* frame) {
 }
 
 void print_frame(CANMessage* frame) {
-    printf(" [print_frame] ID: 0x%03X, DLC: %d, Data: ", frame->id, frame->len);
+    printf(" [print_frame] ID: 0x%03X, DLC: %d, Data: ", (unsigned int)frame->id, frame->len);
     for ( int i = 0; i < 8; i++ ) {
         printf("%d ", frame->data[i]);
     }
     printf("\n");
 }
 
-uint8_t checksum_frame(CANMessage* frame) {
-    uint8_t checksum = 0;
-    for ( int i = 0; i < 8; i++ ) {
-        checksum += frame->data[i];
+bool start_timer(TimerHandle_t timer, const char* name) {
+    if ( timer == NULL ) {
+        printf("[util] ERROR timer '%s' was never created, cannot start it\n", name);
+        return false;
     }
-    return checksum;
+    if ( xTimerStart(timer, 0) != pdPASS ) {
+        printf("[util] ERROR failed to start timer '%s'\n", name);
+        return false;
+    }
+    printf("[util] started timer '%s'\n", name);
+    return true;
 }

@@ -21,9 +21,27 @@
 #define UTIL_H
 
 #include <ACAN2515.h>
+#include <stdint.h>
 
-clock_t get_clock();
+/*
+ * Monotonic millisecond clock.
+ *
+ * Returns 64-bit milliseconds since boot, sourced from esp_timer_get_time()
+ * (a 64-bit microsecond counter). Do NOT use micros()/millis() here: both
+ * return a 32-bit unsigned long that wraps after ~71 minutes / ~49 days, which
+ * makes every "now - lastSeen" comparison in this codebase go haywire.
+ *
+ * All timeouts in settings.h are expressed in milliseconds to match.
+ */
+uint64_t get_clock_ms();
+
 void zero_frame(CANMessage* frame);
 void print_frame(CANMessage* frame);
+
+/*
+ * Start a FreeRTOS software timer, logging (rather than crashing) if the timer
+ * failed to be created or could not be queued for starting.
+ */
+bool start_timer(TimerHandle_t timer, const char* name);
 
 #endif

@@ -27,6 +27,7 @@
 #include "io.h"
 #include "statemachine.h"
 #include "settings.h"
+#include "util.h"
 
 
 /*
@@ -63,7 +64,9 @@ TimerHandle_t handleInboundCANMessagesTimer = xTimerCreate(
 );
 
 
-Battery::Battery(Io* _io) {
+// Create all battery packs and modules
+void Battery::initialise(Io* _io, Bms* _bms) {
+
     voltage = 0;
     lowestCellVoltage = 0;
     highestCellVoltage = 0;
@@ -71,16 +74,11 @@ Battery::Battery(Io* _io) {
     highestSensorTemperature = 0;
     numPacks = NUM_PACKS;
     io = _io;
-}
-
-// Create all battery packs and modules
-void Battery::initialise(Bms* _bms) {
-
     bms = _bms;
 
     for ( int p = 0; p < numPacks; p++ ) {
         printf("[battery] Initialising battery pack %d (CS:%d, inh:%d, mod/pack:%d, cell/mod:%d, T/mod:%d)\n", p, CS_PINS[p], INHIBIT_CONTACTOR_PINS[p], MODULES_PER_PACK, CELLS_PER_MODULE, TEMPS_PER_MODULE);
-        packs[p] = BatteryPack(p, CS_PINS[p], INHIBIT_CONTACTOR_PINS[p], CONTACTOR_FEEDBACK_PINS[p], MODULES_PER_PACK, CELLS_PER_MODULE, TEMPS_PER_MODULE, bms);
+        packs[p].init(p, CS_PINS[p], INHIBIT_CONTACTOR_PINS[p], CONTACTOR_FEEDBACK_PINS[p], MODULES_PER_PACK, CELLS_PER_MODULE, TEMPS_PER_MODULE, bms);
         packs[p].set_battery(this);
         printf("[battery] Initialisation of battery pack %d complete\n", p);
     }
@@ -89,8 +87,16 @@ void Battery::initialise(Bms* _bms) {
     maximumBatteryVoltage = CELL_FULL_VOLTAGE * CELLS_PER_MODULE * MODULES_PER_PACK;
     minimumBatteryVoltage = CELL_EMPTY_VOLTAGE * CELLS_PER_MODULE * MODULES_PER_PACK;
 
-    // Enable polling of packs for voltage/temperature data
+}
+
+/*
+ * Begin polling the packs. Separate from initialise() so that no timer callback
+ * can touch a pack before every pack has been built.
+ */
+void Battery::start() {
     printf("[battery] Enabling polling of packs for data\n");
+    start_timer(pollPacksTimer, "pollPacksTimer");
+    start_timer(handleInboundCANMessagesTimer, "handleInboundCANMessagesTimer");
 }
 
 //
@@ -113,6 +119,7 @@ void Battery::request_data() {
  */
 void Battery::read_message() {
     for ( int p = 0; p < numPacks; p++ ) {
+        packs[p].poll_can();
         packs[p].read_message();
     }
 }
@@ -630,25 +637,31 @@ void Battery::inhibit_contactors_of_packs_with_dead_cells() {
 /* Returns a byte representing the liveness of modules starting at moduleId.
  * Zero is alive, one is dead. moduleId is index of the across the whole pack,
  * rather than indexed by pack and then module. */
-int8_t Battery::get_module_liveness_byte(int8_t startModuleId) {
-    int8_t livenessByte = 0;
-    // If the module ID is out of range, return 0
-    if ( startModuleId > ( NUM_PACKS * MODULES_PER_PACK ) ) {
+uint8_t Battery::get_module_liveness_byte(int8_t startModuleId) {
+    uint8_t livenessByte = 0;
+    const int totalModules = NUM_PACKS * MODULES_PER_PACK;
+    // If the module ID is out of range, report everything as alive (zero)
+    if ( startModuleId < 0 || startModuleId >= totalModules ) {
         return livenessByte;
     }
-    int8_t packId = ( NUM_PACKS * MODULES_PER_PACK ) / startModuleId;
-    int8_t moduleId = ( NUM_PACKS * MODULES_PER_PACK ) % startModuleId;
-    int8_t count = 0;
-    while ( count < 8 ) {
+    /* startModuleId indexes modules across the whole battery, so the pack is the
+     * quotient and the module within that pack is the remainder. This used to be
+     * written the other way round, which divided by zero for startModuleId == 0. */
+    int packId = startModuleId / MODULES_PER_PACK;
+    int moduleId = startModuleId % MODULES_PER_PACK;
+    for ( int count = 0; count < 8; count++ ) {
+        // Stop at the last real module rather than walking off the end of packs[]
+        if ( packId >= numPacks ) {
+            break;
+        }
         if ( !packs[packId].get_module_liveness(moduleId) ) {
-            livenessByte |= 1 << count;
+            livenessByte |= (uint8_t)(1u << count);
         }
         moduleId += 1;
         if ( moduleId >= MODULES_PER_PACK ) {
             moduleId = 0;
             packId += 1;
         }
-        count += 1;
     }
     return livenessByte;
 }

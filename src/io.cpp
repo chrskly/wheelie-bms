@@ -60,17 +60,15 @@ void charge_signal_changed() {
     }
 }
 
-Io::Io() {
+void Io::init() {
     ignitionOn = false;
     chargeEnable = false;
 
     // IGNITION input
     pinMode(IGNITION_ENABLE_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(IGNITION_ENABLE_PIN), ignition_signal_changed, CHANGE);
 
     // CHARGE_ENABLE input
     pinMode(CHARGE_ENABLE_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(CHARGE_ENABLE_PIN), charge_signal_changed, CHANGE);
 
     // POS_CONTACTOR_FEEDBACK input
     pinMode(POS_CONTACTOR_FEEDBACK_PIN, INPUT);
@@ -78,17 +76,26 @@ Io::Io() {
     // NEG_CONTACTOR_FEEDBACK input
     pinMode(NEG_CONTACTOR_FEEDBACK_PIN, INPUT);
 
+    /* Outputs: set direction BEFORE driving them. Writing to a pin that is
+     * still an input only toggles its pull-up on ESP32, so the old ordering
+     * (write, then pinMode) silently lost the initial state. */
+
     // DRIVE_INHIBIT output
-    disable_drive_inhibit("initialization\n");
     pinMode(DRIVE_INHIBIT_PIN, OUTPUT);
+    disable_drive_inhibit("initialization");
 
     // CHARGE_INHIBIT output
     pinMode(CHARGE_INHIBIT_PIN, OUTPUT);
 
     // Heater output
-    disable_heater();
     pinMode(HEATER_ENABLE_PIN, OUTPUT);
-    
+    disable_heater();
+}
+
+void Io::attach_interrupts() {
+    printf("[io] attaching ignition and charge-enable interrupts\n");
+    attachInterrupt(digitalPinToInterrupt(IGNITION_ENABLE_PIN), ignition_signal_changed, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(CHARGE_ENABLE_PIN), charge_signal_changed, CHANGE);
 }
 
 // REMINDER : THESE OUTPUTS ARE A LOW SIDE SWITCHES.

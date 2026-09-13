@@ -66,8 +66,7 @@ class Bms {
         uint8_t soc;                           // State of charge of the battery
         bool internalError;                    // 
         bool watchdogReboot;                   //
-        clock_t lastTimePackVoltagesMatched;   //
-        ACAN2515* CAN;                          //
+        uint64_t lastTimePackVoltagesMatched;  // get_clock_ms() when pack voltages last matched
         struct CANMessage canFrame;             //
         uint16_t invalidEventCounter;          // Count how many times the state machine has seen an invalid event
         bool illegalStateTransition;           //
@@ -82,8 +81,13 @@ class Bms {
 
     public:
         Bms() {};
-        //Bms(Battery* battery, Io* io, Shunt* shunt);
-        Bms(Battery* battery, Io* io, Shunt* shunt);
+        /* Two-phase startup, deliberately:
+         *   init()  wires up collaborators and brings up the main CAN port;
+         *   start() begins the periodic timers.
+         * Never construct a temporary Bms and copy-assign it: init() hands
+         * `this` to StatusLight, so a temporary leaves a dangling back-pointer. */
+        void init(Battery* battery, Io* io, Shunt* shunt);
+        void start();
 
         // State and events
         void set_state(State _state, std::string reason);

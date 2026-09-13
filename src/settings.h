@@ -23,13 +23,30 @@
 #define VERSION 1.0
 
 #define LED_PIN 25
-static const uint32_t QUARTZ_FREQUENCY = 16UL * 1000UL * 1000UL;  // 16 MHz
+
+/* Clock fed to the MCP2515 CAN controllers.
+ *
+ * This value is used for BOTH (a) generating the clock on CAN_CLK_PIN and
+ * (b) computing MCP2515 bit timing, so the two can no longer disagree.
+ *
+ * HARDWARE CHECK REQUIRED: the previous (pico) firmware generated 8 MHz
+ * (clk_sys 80 MHz / 10) while this constant claimed 16 MHz -- the two
+ * contradicted each other. 8 MHz is used here because it matches the clock the
+ * hardware was actually given. If your MCP2515 boards have their own crystal,
+ * set CAN_CLK_PIN to -1 to disable generation and set this to the crystal's
+ * frequency instead. */
+static const uint32_t QUARTZ_FREQUENCY = 8UL * 1000UL * 1000UL;  // 8 MHz
+#define CAN_CLK_LEDC_CHANNEL 0                      // LEDC channel used to synthesise the CAN clock
 
 // Serial port
 #define UART_ID      uart0
 #define BAUD_RATE   115200
 #define UART_TX_PIN      0                          // pin 1
 #define UART_RX_PIN      1                          // pin 2
+
+// Number of paralleled packs. Declared here because the pin arrays below are
+// sized by it.
+#define NUM_PACKS_CFG 2
 
 // CAN bus
 #define SPI_PORT      spi0
@@ -38,37 +55,51 @@ static const uint32_t QUARTZ_FREQUENCY = 16UL * 1000UL * 1000UL;  // 16 MHz
 #define SPI_MOSI        19                          // pin 25
 #define CAN_CLK_PIN     21                          // pin 27
 #define MAIN_CAN_CS     17                          // pin 22
-const int CS_PINS[2] = { 20, 15 };                  // Chip select pins for the CAN controllers for each battery pack.
+const int CS_PINS[NUM_PACKS_CFG] = { 20, 15 };      // Chip select pins for the CAN controllers for each battery pack.
+
+/* The pack MCP2515 controllers are driven in POLLED mode (ACAN2515 treats INT
+ * pin 255 as "no interrupt"). Previously both packs were constructed with INT
+ * pin 0, which (a) gave both controllers the same interrupt pin and (b) is the
+ * ESP32-S3 strapping/boot pin, also claimed by UART_TX_PIN. The RX path is
+ * already timer-polled, so no interrupt pin is needed. */
+#define PACK_CAN_NO_INTERRUPT_PIN 255
 
 // Inputs
 #define IGNITION_ENABLE_PIN        10               // Ignition on input signal
 #define CHARGE_ENABLE_PIN           9               // Charge enabled input signal
 #define POS_CONTACTOR_FEEDBACK_PIN 11               // Feedback from the HVJB positive contactor for welding detection
 #define NEG_CONTACTOR_FEEDBACK_PIN 12               // Feedback from the HVJB negative contactor for welding detection
-const int CONTACTOR_FEEDBACK_PINS[2] = { 13, 14 };  // Feedback from the battery box contactors for welding detection
+const int CONTACTOR_FEEDBACK_PINS[NUM_PACKS_CFG] = { 13, 14 };  // Feedback from the battery box contactors for welding detection
 
 // Outputs
 #define CHARGE_INHIBIT_PIN 4                        // Low-side switch to create CHARGE_INHIBIT signal. a.k.a OUT1
 #define HEATER_ENABLE_PIN 5                         // Low-side switch to turn on battery heaters. a.k.a. OUT2
-const int INHIBIT_CONTACTOR_PINS[2] = { 2, 3 };     // Low-side switch to disallow closing of battery box contactors
+const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side switch to disallow closing of battery box contactors
 #define DRIVE_INHIBIT_PIN 6                         // Low-side switch to disallow driving. a.k.a OUT3
 #define OUT_4_PIN 7                                 // unused
 
 // Pack/module configuration
-#define NUM_PACKS         2                         // The total number of paralleled packs in this battery
+#define NUM_PACKS  NUM_PACKS_CFG                    // The total number of paralleled packs in this battery
 #define CELLS_PER_MODULE 16                         // The number of cells in each module
 #define TEMPS_PER_MODULE  4                         // The number of temperature sensors in each module
 #define MODULES_PER_PACK  6                         // The number of modules in each pack
 
 // Timeouts
-#define MODULE_TTL 5                                // If we have not seen an update from a module in MODULE_TTL
-                                                    // seconds, them mark the module as dead.
+//
+// ALL timeouts are in MILLISECONDS and are compared against get_clock_ms().
+// They used to be a mix of "seconds" (per the comments) measured against a
+// 10ms tick that was then divided by CLOCKS_PER_SEC, which made every one of
+// them wrong by a factor of 10,000.
+#define MODULE_TTL_MS 5000                          // If we have not seen an update from a module in MODULE_TTL_MS
+                                                    // milliseconds, then mark the module as dead.
 
-#define SHUNT_TTL 3                                 // If we have not seen an update from the ISA shunt in SHUNT_TTL
-                                                    // seconds, then mark it as dead.
+#define SHUNT_TTL_MS 3000                           // If we have not seen an update from the ISA shunt in
+                                                    // SHUNT_TTL_MS milliseconds, then mark it as dead.
 
-#define PACKS_IMBALANCED_TTL 3000                   // If the packs are imbalanced for more than PACKS_IMBALANCED_TTL
-                                                    // seconds, then actually inhibit the contactors.
+#define PACKS_IMBALANCED_TTL_MS 3000                // If the packs are imbalanced for more than
+                                                    // PACKS_IMBALANCED_TTL_MS milliseconds, then actually inhibit
+                                                    // the contactors. (The old value of 3000 was documented as
+                                                    // seconds -- 50 minutes -- which was clearly not intended.)
 
 #define SAFE_VOLTAGE_DELTA_BETWEEN_PACKS 10         // When closing contactors, the voltage difference between the packs
                                                     // shall not be greater than this voltage, in millivolts.
@@ -79,7 +110,9 @@ const int INHIBIT_CONTACTOR_PINS[2] = { 2, 3 };     // Low-side switch to disall
 #define DEAD_CELL_VOLTAGE 2500                       // Min cell voltage is 2800mV, so lets consider 2500mV as dead.
 
 // Temperature
-#define PACK_TEMP_SAMPLE_INTERVAL 60                // How often to sample the pack temperature in seconds
+#define PACK_TEMP_SAMPLE_INTERVAL_MS 60000          // How often to sample the pack temperature, in milliseconds.
+                                                    // temperatureDelta is therefore a per-minute rate, which is
+                                                    // what the charge derating logic expects.
 #define WARNING_TEMPERATURE 30                      // 
 #define MAXIMUM_TEMPERATURE 50                      // Stop everything if the battery is above this temperature
 #define CHARGE_TEMPERATURE_MINIMUM -10              // minimum temperature required to allow charging
@@ -102,5 +135,8 @@ const int INHIBIT_CONTACTOR_PINS[2] = { 2, 3 };     // Low-side switch to disall
 #define CAN_MUTEX_TIMEOUT_MS 200                    // Timeout for the CAN mutex
 #define SEND_FRAME_RETRIES 6                        // Number of times to retry sending a frame before giving up
 #define READ_FRAME_RETRIES 3                        // Number of times to retry reading a frame before giving up
+#define READ_FRAMES_PER_CYCLE 16                    // Max frames drained from a pack per service tick. A poll of a
+                                                    // 6-module pack bursts more frames than the driver's 32-frame
+                                                    // receive buffer holds, so one-per-tick loses module replies.
 
 #endif  // BMS_SRC_SETTINGS_H_

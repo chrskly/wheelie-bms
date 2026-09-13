@@ -20,7 +20,7 @@
 #ifndef BMS_SRC_INCLUDE_MODULE_H_
 #define BMS_SRC_INCLUDE_MODULE_H_
 
-#include <time.h>
+#include <stdint.h>
 #include "settings.h"
 
 class BatteryPack;
@@ -33,12 +33,16 @@ class BatteryModule {
       uint16_t cellVoltage[CELLS_PER_MODULE];    // Voltages of each cell, stored in mV
       int8_t cellTemperature[TEMPS_PER_MODULE];  // Temperatures of each cell
       bool allModuleDataPopulated;               // True when we have voltage/temp information for all cells
-      clock_t lastHeartbeat;                     // Time when we last got an update from this module
+      uint64_t lastHeartbeat;                    // get_clock_ms() when we last got an update from this module
       BatteryPack* pack;                         // The parent BatteryPack that contains this module
 
    public:
       BatteryModule();
-      BatteryModule(int _id, BatteryPack* _pack, int _numCells, int _numTemperatureSensors);
+      /* Initialise in place. Do NOT construct a temporary and copy-assign it:
+       * BatteryModule stores a back-pointer to its parent pack, and the old
+       * `modules[m] = BatteryModule(m, this, ...)` pattern captured the address
+       * of a temporary BatteryPack that was destroyed moments later. */
+      void init(int _id, BatteryPack* _pack, int _numCells, int _numTemperatureSensors);
       void print();
 
       // Voltage

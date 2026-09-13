@@ -37,7 +37,10 @@ class BatteryPack {
       int id;
 
       BatteryPack();
-      BatteryPack(int _id, int CANCSPin, int _contactorPin, int _contactorFeedbackPin, int _numModules,
+      /* Initialise in place. Do NOT construct a temporary and copy-assign it:
+       * each BatteryModule stores a back-pointer to its parent pack, so building
+       * a temporary BatteryPack leaves every module pointing at freed stack. */
+      void init(int _id, int CANCSPin, int _contactorPin, int _contactorFeedbackPin, int _numModules,
             int _numCellsPerModule, int _numTemperatureSensorsPerModule, Bms* _bms);
 
       void set_battery(Battery* battery) { this->battery = battery; }
@@ -48,6 +51,9 @@ class BatteryPack {
       bool is_alive();
       void request_data();
       void read_message();
+      /* Pack CAN controllers run in polled mode; this wakes the ACAN2515
+       * driver task so it can service the MCP2515 over SPI. */
+      void poll_can();
       bool send_frame(CANMessage *frame);
 
       void set_pack_error_status(int newErrorStatus);
@@ -143,7 +149,7 @@ class BatteryPack {
          50, 50, 50, 50,  // 36° to 39°
       };
 
-      clock_t lastTemperatureSampleTime;
+      uint64_t lastTemperatureSampleTime;
       int8_t lastTemperatureSample;
       int8_t temperatureDelta;
 
