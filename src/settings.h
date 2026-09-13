@@ -246,13 +246,40 @@ static_assert(every_pin_is_unique(),
 #define DISCHARGE_CURRENT_MAX_PER_PACK_A 100        // A. Per pack, when not derated
 #define CHARGE_TAPER_START_SOC 90                   // %. Above this, taper charge current linearly to 0 at 100%
 
-// Cell balancing
-/* Balancing is OFF by default. The timer logic is implemented and correct, but
- * it has never been exercised on hardware and it dissipates energy through the
- * module bleed resistors. Set to 1 only when you are ready to test it. */
-#define CELL_BALANCING_ENABLED 0
+/*==============================================================================
+ * Cell balancing
+ *
+ * Mechanism, per the BMWPhevBMS reference implementation:
+ *
+ *   The module boards bleed cells down towards a target voltage sent in bytes
+ *   0-1 of the poll message (little endian), with byte 4 set to 0x48 instead of
+ *   0x40 to arm balancing. The target is the LOWEST cell in the pack plus a
+ *   small offset, so every cell above it bleeds down to meet it. When not
+ *   balancing the target is 0x10C7 (4295 mV), which is above any real cell and
+ *   therefore inert.
+ *
+ *   While a cell is bleeding its measured voltage is depressed, so readings
+ *   must be discarded during balancing and for a settling period afterwards.
+ *   The module also reports its own balance status, and readings are discarded
+ *   whenever that is non-zero.
+ *
+ * Balancing runs on a duty cycle: balance for CELL_BALANCE_DUTY_MS, then rest
+ * for CELL_BALANCE_REST_MS so the cells recover and can be measured honestly
+ * before deciding whether another burst is needed.
+ *============================================================================*/
+#define CELL_BALANCING_ENABLED 1                    // Set to 0 to disable balancing entirely
+
 #define CELL_BALANCE_VOLTAGE 3900                   // mV. Only balance when the highest cell is above this
-#define CELL_BALANCE_INTERVAL_MS 60000              // Interval between cell balancing sessions, milliseconds
+#define CELL_BALANCE_HYSTERESIS_MV 40               // mV. Only balance when (highest - lowest) exceeds this
+#define CELL_BALANCE_TARGET_OFFSET_MV 5             // mV added to the lowest cell to form the bleed target
+
+#define CELL_BALANCE_DUTY_MS 60000                  // How long one balancing burst lasts
+#define CELL_BALANCE_REST_MS 60000                  // Rest between bursts, so cells recover before re-measuring
+#define CELL_BALANCE_SETTLE_MS 5000                 // After a burst ends, ignore readings for this long
+
+/* Byte 4 of the poll message: 0x48 arms balancing, 0x40 does not. */
+#define MODULE_CMD_BALANCE_ON  0x48
+#define MODULE_CMD_BALANCE_OFF 0x40
 
 /* Hardware watchdog. The worker task must check in at least this often or the
  * chip resets. Set to 0 to disable. */

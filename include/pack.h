@@ -66,8 +66,14 @@ class BatteryPack {
       void poll_can();
       bool send_frame(CANMessage *frame);
 
-      bool pack_is_due_to_be_balanced();
-      void reset_balance_timer();
+      // Cell balancing
+      bool should_start_balancing();
+      void update_balance_state();
+      bool balancing_is_active() { return balancePhase == BALANCE_BURST; }
+      /* True while cell voltage readings cannot be trusted: a bleeding cell
+       * measures low, and it takes a moment to recover once bleeding stops. */
+      bool voltage_readings_are_suspect();
+      uint16_t get_balance_target_mv();
 
       // Voltage
       float get_voltage();
@@ -131,8 +137,13 @@ class BatteryPack {
       uint8_t contactorInhibitReasons = CI_STARTUP;
       uint64_t contactorInhibitedSince = 0;   // get_clock_ms(), for weld-check settling
 
-      bool balancingEnabled = false;                   //
-      uint64_t nextBalanceTime = 0;                    // get_clock_ms() at which the next balance may start
+      /* Balancing duty cycle. BALANCE_BURST commands the modules to bleed;
+       * BALANCE_REST lets them recover so the next measurement is honest. */
+      enum BalancePhase { BALANCE_REST, BALANCE_BURST };
+      BalancePhase balancePhase = BALANCE_REST;
+      uint64_t balancePhaseStartedAt = 0;              // get_clock_ms()
+      uint64_t balanceBurstEndedAt = 0;                // get_clock_ms(), for the settling window
+      uint16_t balanceTargetMv = 0;                    // bleed target sent to the modules
       uint8_t pollMessageId = 0;                       //
       bool initialised = false;                        //
       BatteryModule modules[MODULES_PER_PACK];         // The child modules that make up this BatteryPack

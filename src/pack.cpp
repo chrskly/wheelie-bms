@@ -169,15 +169,18 @@ void BatteryPack::request_data() {
     // Counter that cycles from 0x0 to 0xE
     if ( modulePollingCycle == 0xF ) {
         modulePollingCycle = 0;
-        balancingEnabled = pack_is_due_to_be_balanced();
     }
+    update_balance_state();
+    const bool balancing = balancing_is_active();
     for ( int m = 0; m < numModules; m++ ) {
         pollModuleFrame.id = 0x080 | (m);
         pollModuleFrame.len = 8;
-        if ( balancingEnabled ) {
-            // Balance target: the lowest cell in the pack, 16-bit little endian
-            put_u16_le(&pollModuleFrame, 0, get_lowest_cell_voltage());
+        if ( balancing ) {
+            /* Bleed target, little endian. Cells above this bleed down to meet
+             * it; the offset stops the lowest cell chasing itself. */
+            put_u16_le(&pollModuleFrame, 0, get_balance_target_mv());
         } else {
+            // 0x10C7 == 4295 mV, above any real cell, so nothing bleeds
             pollModuleFrame.data[0] = 0xC7;
             pollModuleFrame.data[1] = 0x10;
         }
@@ -187,11 +190,11 @@ void BatteryPack::request_data() {
             pollModuleFrame.data[4] = 0x20;
             pollModuleFrame.data[5] = 0x00;
         } else {
-            /* Both arms of this used to assign 0x40. Balancing is driven by the
-             * target voltage in bytes 0-1 (see above), not by this byte, so
-             * there is no separate "balancing" value to select here. Collapsed
-             * rather than inventing one. */
-            pollModuleFrame.data[4] = 0x40;
+            /* 0x48 arms balancing, 0x40 does not. An earlier pass collapsed
+             * these two arms to 0x40 on the assumption that the target voltage
+             * alone drove balancing -- that was wrong; the reference
+             * implementation distinguishes them here. */
+            pollModuleFrame.data[4] = balancing ? MODULE_CMD_BALANCE_ON : MODULE_CMD_BALANCE_OFF;
             pollModuleFrame.data[5] = 0x01;
         }
         pollModuleFrame.data[6] = modulePollingCycle << 4;
@@ -282,31 +285,98 @@ bool BatteryPack::send_frame(CANMessage *frame) {
     return false;
 }
 
-/* Return true if it's time for the pack to be balanced.
+/*
+ * Should this pack be bleeding cells right now?
  *
- * Balancing works by sending the lowest cell voltage as a target in bytes 0-1
- * of the poll message; the modules bleed down towards it. Only worth doing near
- * the top of the range, where the cells are on the steep part of the curve.
- *
- * Gated behind CELL_BALANCING_ENABLED, which defaults to off: this has never
- * been exercised on hardware and it dissipates energy through the module bleed
- * resistors. The timer logic itself is implemented and correct. */
-bool BatteryPack::pack_is_due_to_be_balanced() {
+ * Only near the top of the range, where the cells are on the steep part of the
+ * curve and a bleed resistor can actually close the gap, and only when the
+ * spread is worth acting on. Matches the reference implementation's condition:
+ * highest cell above the balance voltage AND more than the hysteresis above the
+ * lowest cell.
+ */
+bool BatteryPack::should_start_balancing() {
     if ( !CELL_BALANCING_ENABLED ) {
         return false;
     }
-    if ( get_highest_cell_voltage() < CELL_BALANCE_VOLTAGE ) {
+    const uint16_t highest = get_highest_cell_voltage();
+    const uint16_t lowest = get_lowest_cell_voltage();
+    // No usable data yet
+    if ( highest == 0 || lowest == NO_CELL_VOLTAGE_READING || highest < lowest ) {
         return false;
     }
-    if ( get_clock_ms() < nextBalanceTime ) {
+    if ( highest <= CELL_BALANCE_VOLTAGE ) {
         return false;
     }
-    reset_balance_timer();
-    return true;
+    return ( highest - lowest ) > CELL_BALANCE_HYSTERESIS_MV;
 }
 
-void BatteryPack::reset_balance_timer() {
-    nextBalanceTime = get_clock_ms() + CELL_BALANCE_INTERVAL_MS;
+/*
+ * Advance the balancing duty cycle. Called once per polling cycle.
+ *
+ * BALANCE_REST  -> BALANCE_BURST once the rest period has elapsed and the cells
+ *                  still warrant balancing (decided on settled readings).
+ * BALANCE_BURST -> BALANCE_REST once the burst has run for its duty period.
+ */
+void BatteryPack::update_balance_state() {
+    const uint64_t now = get_clock_ms();
+
+    if ( !CELL_BALANCING_ENABLED ) {
+        balancePhase = BALANCE_REST;
+        return;
+    }
+
+    switch ( balancePhase ) {
+
+        case BALANCE_BURST:
+            if ( ( now - balancePhaseStartedAt ) >= CELL_BALANCE_DUTY_MS ) {
+                balancePhase = BALANCE_REST;
+                balancePhaseStartedAt = now;
+                balanceBurstEndedAt = now;
+                printf("[pack%d][balance] burst finished, resting\n", id);
+            }
+            break;
+
+        case BALANCE_REST:
+        default:
+            if ( ( now - balancePhaseStartedAt ) < CELL_BALANCE_REST_MS ) {
+                break;
+            }
+            if ( should_start_balancing() ) {
+                /* Latch the target now, from settled readings, so it does not
+                 * chase the sagging measurements taken during the burst. */
+                balanceTargetMv = (uint16_t)( get_lowest_cell_voltage() + CELL_BALANCE_TARGET_OFFSET_MV );
+                balancePhase = BALANCE_BURST;
+                balancePhaseStartedAt = now;
+                printf("[pack%d][balance] starting burst, target %umV (high %umV, low %umV)\n",
+                       id, (unsigned int)balanceTargetMv,
+                       (unsigned int)get_highest_cell_voltage(),
+                       (unsigned int)get_lowest_cell_voltage());
+            } else {
+                // Re-arm the rest window so we re-evaluate a period from now
+                balancePhaseStartedAt = now;
+            }
+            break;
+    }
+}
+
+/*
+ * A cell that is bleeding reads low, and needs a moment to recover once the
+ * bleed stops, so readings are discarded for the whole burst plus a settling
+ * window afterwards. The reference implementation does the same thing via its
+ * setBalIgnore() flag.
+ */
+bool BatteryPack::voltage_readings_are_suspect() {
+    if ( balancePhase == BALANCE_BURST ) {
+        return true;
+    }
+    if ( balanceBurstEndedAt == 0 ) {
+        return false;
+    }
+    return ( get_clock_ms() - balanceBurstEndedAt ) < CELL_BALANCE_SETTLE_MS;
+}
+
+uint16_t BatteryPack::get_balance_target_mv() {
+    return balanceTargetMv;
 }
 
 
@@ -398,6 +468,11 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
         return;
     }
 
+    /* A bleeding cell measures low. Discard voltage readings for the whole
+     * balancing burst and the settling window after it, in addition to the
+     * module's own balance-status gate. */
+    const bool readingsSuspect = voltage_readings_are_suspect();
+
     switch (messageId) {
         case 0x000:
             /* Per module: this frame is 0x100 | moduleId, so the status it
@@ -412,42 +487,42 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
                                                 | ( (uint32_t)frame->data[5] << 8 ) );
             break;
         case 0x020:
-            if ( modules[moduleId].get_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(0, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(1, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(2, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x030:
-            if ( modules[moduleId].get_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(3, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(4, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(5, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x040:
-            if ( modules[moduleId].get_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(6, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(7, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(8, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x050:
-            if ( modules[moduleId].get_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(9, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(10, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(11, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x060:
-            if ( modules[moduleId].get_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(12, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(13, static_cast<uint16_t>(frame->data[2] + (frame->data[3] & 0x3F) * 256));
                 modules[moduleId].set_cell_voltage(14, static_cast<uint16_t>(frame->data[4] + (frame->data[5] & 0x3F) * 256));
             }
             break;
         case 0x070:
-            if ( modules[moduleId].get_balance_status() == 0 ) {
+            if ( modules[moduleId].get_balance_status() == 0 && !readingsSuspect ) {
                 modules[moduleId].set_cell_voltage(15, static_cast<uint16_t>(frame->data[0] + (frame->data[1] & 0x3F) * 256));
             }
             break;
