@@ -61,7 +61,7 @@ class BatteryModule {
       void heartbeat();
 
       // Temperature
-      void update_temperature(int tempSensorId, uint8_t newTemperature);
+      void update_temperature(int tempSensorId, int8_t newTemperature);
       int8_t get_lowest_temperature();
       int8_t get_highest_temperature();
       bool has_temperature_sensor_over_max();

@@ -593,6 +593,32 @@ TimerHandle_t sendAlarmMessageTimer = xTimerCreate(
 
 // Handle messages coming in on the main CAN bus
 
+/*
+ * Assemble the 32-bit value an ISA shunt frame carries in bytes 2..5.
+ *
+ * Each byte is widened to uint32_t before shifting. Previously these were
+ * written as `m.data[5] << 24`: data[5] is a uint8_t that promotes to int, so
+ * for values >= 0x80 the result exceeds INT_MAX. That is UB under strict
+ * C++11, but this project builds as gnu++14, where DR1457 makes it well
+ * defined (the value is computed in the corresponding unsigned type, then
+ * converted to int -- implementation-defined, two's complement on gcc). So
+ * this was not a live miscompilation risk; widening simply removes the
+ * reliance on that conversion and states the intent.
+ *
+ * NOTE: the byte order below is deliberately left exactly as it was found,
+ * with data[5] as the most significant byte. The shunt actually transmits
+ * these big-endian (data[2] is the MSB), so these values are still wrong --
+ * that is a separate issue (B80) and is corrected in the CAN-encoding pass.
+ * This change only removes the undefined behaviour.
+ */
+static int32_t shunt_payload(const CANMessage& m) {
+    return (int32_t)( ((uint32_t)m.data[5] << 24)
+                    | ((uint32_t)m.data[4] << 16)
+                    | ((uint32_t)m.data[3] <<  8)
+                    | ((uint32_t)m.data[2]) );
+}
+
+
 void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
     CANMessage m;
     extern Shunt shunt;
@@ -601,42 +627,42 @@ void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
         switch ( m.id ) {
             // ISA shunt amps
             case 0x521:
-                shunt.set_amps( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) );
+                shunt.set_amps( shunt_payload(m) );
                 shunt.heartbeat();
                 break;
             // ISA shunt voltage 1
             case 0x522:
-                shunt.set_voltage1( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.set_voltage1( shunt_payload(m) / 1000.0f );
                 shunt.heartbeat();
                 break;
             // ISA shunt voltage 2
             case 0x523:
-                shunt.set_voltage2( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.set_voltage2( shunt_payload(m) / 1000.0f );
                 shunt.heartbeat();
                 break;
             // ISA shunt voltage 3
             case 0x524:
-                shunt.set_voltage3( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.set_voltage3( shunt_payload(m) / 1000.0f );
                 shunt.heartbeat();
                 break;
             // ISA shunt temperature
             case 0x525:
-                shunt.set_temperature( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 10 );
+                shunt.set_temperature( shunt_payload(m) / 10 );
                 shunt.heartbeat();
                 break;
             // ISA shunt kilowatts
             case 0x526:
-                shunt.set_watts( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) / 1000.0f );
+                shunt.set_watts( shunt_payload(m) / 1000.0f );
                 shunt.heartbeat();
                 break;
             // ISA shunt amp-hours
             case 0x527:
-                shunt.set_ampSeconds( (int32_t)(m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) );
+                shunt.set_ampSeconds( shunt_payload(m) );
                 shunt.heartbeat();
                 break;
             // ISA shunt kilowatt-hours
             case 0x528:
-                shunt.set_wattHours( (int32_t)( (m.data[5] << 24) | (m.data[4] << 16) | (m.data[3] << 8) | (m.data[2]) ) );
+                shunt.set_wattHours( shunt_payload(m) );
                 shunt.heartbeat();
                 break;
             default:

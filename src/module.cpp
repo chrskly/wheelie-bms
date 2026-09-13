@@ -40,11 +40,27 @@ void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTem
     // Point back to parent pack
     pack = _pack;
     // Initialise all cell voltages to zero
+    if ( _numCells > CELLS_PER_MODULE ) {
+        printf("[module%d] ERROR numCells %d exceeds CELLS_PER_MODULE %d, clamping\n",
+               _id, _numCells, CELLS_PER_MODULE);
+        _numCells = CELLS_PER_MODULE;
+    }
+    if ( _numCells < 0 ) {
+        _numCells = 0;
+    }
     numCells = _numCells;
     for ( int c = 0; c < numCells; c++ ) {
         cellVoltage[c] = 0;
     }
     // Initialise temperature sensor readings to zero
+    if ( _numTemperatureSensors > TEMPS_PER_MODULE ) {
+        printf("[module%d] ERROR numTemperatureSensors %d exceeds TEMPS_PER_MODULE %d, clamping\n",
+               _id, _numTemperatureSensors, TEMPS_PER_MODULE);
+        _numTemperatureSensors = TEMPS_PER_MODULE;
+    }
+    if ( _numTemperatureSensors < 0 ) {
+        _numTemperatureSensors = 0;
+    }
     numTemperatureSensors = _numTemperatureSensors;
     for ( int t = 0; t < numTemperatureSensors; t++ ) {
         cellTemperature[t] = -127;
@@ -111,6 +127,9 @@ uint16_t BatteryModule::get_highest_cell_voltage() {
 
 // Update the voltage for a single cell
 void BatteryModule::set_cell_voltage(int cellIndex, uint16_t newCellVoltage) {
+    if ( cellIndex < 0 || cellIndex >= numCells ) {
+        return;
+    }
     cellVoltage[cellIndex] = newCellVoltage;
 }
 
@@ -188,7 +207,10 @@ void BatteryModule::heartbeat() {
 //// ----
 
 // Update the value for one of the temperature sensors
-void BatteryModule::update_temperature(int tempSensorId, uint8_t newTemperature) {
+void BatteryModule::update_temperature(int tempSensorId, int8_t newTemperature) {
+    if ( tempSensorId < 0 || tempSensorId >= numTemperatureSensors ) {
+        return;
+    }
     cellTemperature[tempSensorId] = newTemperature;
 }
 
@@ -233,8 +255,8 @@ bool BatteryModule::has_temperature_sensor_over_max() {
 // returns true when any temperature sensor in this module is over the warning
 // level, but below the critical level.
 bool BatteryModule::temperature_at_warning_level() {
-    for ( int c = 0; c < numCells; c++ ) {
-        if ( cellTemperature[c] >= WARNING_TEMPERATURE && cellTemperature[c] < MAXIMUM_TEMPERATURE ) {
+    for ( int t = 0; t < numTemperatureSensors; t++ ) {
+        if ( cellTemperature[t] >= WARNING_TEMPERATURE && cellTemperature[t] < MAXIMUM_TEMPERATURE ) {
             return true;
         }
     }

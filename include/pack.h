@@ -46,7 +46,7 @@ class BatteryPack {
       void set_battery(Battery* battery) { this->battery = battery; }
 
       void print();
-      uint8_t getcheck(CANMessage &msg, int id);
+      uint8_t getcheck(CANMessage &msg, int moduleId);  // moduleId, NOT pack id
       int8_t get_module_liveness(int8_t moduleId);
       bool is_alive();
       void request_data();
@@ -92,6 +92,9 @@ class BatteryPack {
 
       int16_t get_max_discharge_current();
       int16_t get_max_charge_current_by_temperature();
+      /* Safe lookup into chargeCurrentMax[], which is indexed by
+       * (temperature + 10) and only covers -10C..+39C. */
+      int16_t charge_current_for_temperature(int8_t temperature);
 
       void increment_can_tx_error_count() { canTxErrorCount++; }
       void increment_can_rx_error_count() { canRxErrorCount++; }

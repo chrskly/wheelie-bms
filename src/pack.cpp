@@ -32,6 +32,14 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
         int _numModules, int _numCellsPerModule, int _numTemperatureSensorsPerModule, Bms* _bms) {
 
     id = _id;
+    if ( _numModules > MODULES_PER_PACK ) {
+        printf("[pack%d] ERROR numModules %d exceeds MODULES_PER_PACK %d, clamping\n",
+               _id, _numModules, MODULES_PER_PACK);
+        _numModules = MODULES_PER_PACK;
+    }
+    if ( _numModules < 0 ) {
+        _numModules = 0;
+    }
     numModules = _numModules;
     numCellsPerModule = _numCellsPerModule;
     numTemperatureSensorsPerModule = _numTemperatureSensorsPerModule;
@@ -107,8 +115,17 @@ void BatteryPack::print() {
     }
 }
 
-uint8_t BatteryPack::getcheck(CANMessage &msg, int id) {
+/* NB: the second parameter is the MODULE index within this pack, not the pack
+ * id. It used to be named `id`, which shadowed the BatteryPack::id member and
+ * made this read as though it were indexed by pack. */
+uint8_t BatteryPack::getcheck(CANMessage &msg, int moduleId) {
     unsigned char canmes[11];
+    const int finalxorCount = (int)(sizeof(finalxor) / sizeof(finalxor[0]));
+    if ( moduleId < 0 || moduleId >= finalxorCount ) {
+        printf("[pack%d][getcheck] module id %d out of range for finalxor[%d]\n",
+               this->id, moduleId, finalxorCount);
+        return 0;
+    }
     int meslen = msg.len + 1;  // remove one for crc and add two for id bytes
     canmes[1] = msg.id;
     canmes[0] = msg.id >> 8;
@@ -116,7 +133,7 @@ uint8_t BatteryPack::getcheck(CANMessage &msg, int id) {
     for (int i = 0; i < (msg.len - 1); i++) {
         canmes[i + 2] = msg.data[i];
     }
-    return (crc8.get_crc8(canmes, meslen, finalxor[id]));
+    return (crc8.get_crc8(canmes, meslen, finalxor[moduleId]));
 }
 
 int8_t BatteryPack::get_module_liveness(int8_t moduleId) {
@@ -370,6 +387,14 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
     int messageId = (frame->id & 0x0F0);
     int moduleId = (frame->id & 0x00F);
 
+    /* The module id is the low nibble of the frame id, so it can be 0-15, while
+     * we only have numModules (6) modules. Anything higher used to be written
+     * straight past the end of modules[]. */
+    if ( moduleId >= numModules ) {
+        increment_can_rx_error_count();
+        return;
+    }
+
     switch (messageId) {
         case 0x000:
             set_pack_error_status(frame->data[0] + (frame->data[1] << 8) + (frame->data[2] << 16) + (frame->data[3] << 24));
@@ -500,10 +525,27 @@ int8_t BatteryPack::get_highest_temperature() {
 // Extract temperature sensor readings from CAN frame and update stored values
 void BatteryPack::decode_temperatures(CANMessage *temperatureMessageFrame) {
     int moduleId = (temperatureMessageFrame->id & 0x00F);
+
+    // See decode_voltages(): the low nibble can address modules we do not have.
+    if ( moduleId >= numModules ) {
+        increment_can_rx_error_count();
+        return;
+    }
+
     modules[moduleId].heartbeat();
     for ( int t = 0; t < numTemperatureSensorsPerModule; t++ ) {
-        float temperature = temperatureMessageFrame->data[t] - 40;
-        modules[moduleId].update_temperature(t, temperature);
+        /* Raw counts are offset by 40. Computed in int and clamped to the
+         * int8_t the module stores: the old code built a float and passed it to
+         * a uint8_t parameter, so every reading below 40 counts (i.e. below
+         * 0 C) was an out-of-range conversion, which is undefined behaviour. */
+        int reading = (int)temperatureMessageFrame->data[t] - 40;
+        if ( reading < -128 ) {
+            reading = -128;
+        }
+        if ( reading > 127 ) {
+            reading = 127;
+        }
+        modules[moduleId].update_temperature(t, (int8_t)reading);
     }
 }
 
@@ -556,6 +598,20 @@ int16_t BatteryPack::get_max_discharge_current() {
     return 0;
 }
 
+/* chargeCurrentMax[] is indexed by (temperature + 10) and covers -10C to +39C
+ * only. Return 0 (no charging) outside that window, which also covers the
+ * -126 / 126 sentinels the temperature getters return before any module data
+ * has arrived. The three call sites below used to index the array directly
+ * with no range check at all. */
+int16_t BatteryPack::charge_current_for_temperature(int8_t temperature) {
+    const int index = (int)temperature + 10;
+    const int entries = (int)(sizeof(chargeCurrentMax) / sizeof(chargeCurrentMax[0]));
+    if ( index < 0 || index >= entries ) {
+        return 0;
+    }
+    return (int16_t)chargeCurrentMax[index];
+}
+
 /* Returns the maximum charge current as a function of pack temperature. */
 int16_t BatteryPack::get_max_charge_current_by_temperature() {
     // Safety checks first
@@ -572,7 +628,7 @@ int16_t BatteryPack::get_max_charge_current_by_temperature() {
     /* Allow predefined max current when the temperature is below
      * CHARGE_TEMPERATURE_DERATING_MINIMUM (15°C) */
     if ( get_highest_temperature() < CHARGE_TEMPERATURE_DERATING_MINIMUM ) {
-        return chargeCurrentMax[static_cast<int>(get_highest_temperature() + 10)];
+        return charge_current_for_temperature(get_highest_temperature());
     }
 
     /* When battery temp is over CHARGE_TEMPERATURE_DERATING_MINIMUM (15°C), 
@@ -580,13 +636,13 @@ int16_t BatteryPack::get_max_charge_current_by_temperature() {
      * per minute. Scale back charge current by 10% for every degree over that.*/
     else {
         if ( temperatureDelta < CHARGE_TEMPERATURE_DERATING_THRESHOLD ) {
-            return chargeCurrentMax[static_cast<int>(get_highest_temperature() + 10)];
+            return charge_current_for_temperature(get_highest_temperature());
         } else {
             if ( (temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD) >= 10 ) {
                 return 0;
             } else {
                 float derateScaleFactor = (10 - temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD) / 100;
-                return chargeCurrentMax[static_cast<int>(get_highest_temperature() + 10)] * derateScaleFactor;
+                return charge_current_for_temperature(get_highest_temperature()) * derateScaleFactor;
             }
         }
     }
