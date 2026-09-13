@@ -78,17 +78,22 @@ void Io::init() {
 
     /* Outputs: set direction BEFORE driving them. Writing to a pin that is
      * still an input only toggles its pull-up on ESP32, so the old ordering
-     * (write, then pinMode) silently lost the initial state. */
-
-    // DRIVE_INHIBIT output
+     * (write, then pinMode) silently lost the initial state.
+     *
+     * All three start in the SAFE state: drive and charge inhibited, heater
+     * off. Previously drive inhibit was released and charge inhibit was never
+     * driven at all, so charging was permitted from power-on before a single
+     * cell voltage had been read. */
     pinMode(DRIVE_INHIBIT_PIN, OUTPUT);
-    disable_drive_inhibit("initialization");
+    driveInhibited = false;                        // force the write below
+    enable_drive_inhibit("initialization, safe default");
 
-    // CHARGE_INHIBIT output
     pinMode(CHARGE_INHIBIT_PIN, OUTPUT);
+    chargeInhibited = false;                       // force the write below
+    enable_charge_inhibit("initialization, safe default");
 
-    // Heater output
     pinMode(HEATER_ENABLE_PIN, OUTPUT);
+    heaterEnabled = true;                          // force the write below
     disable_heater();
 }
 
@@ -105,53 +110,67 @@ void Io::attach_interrupts() {
 // DRIVE_INHIBIT output
 
 void Io::enable_drive_inhibit(std::string context) {
-    printf("[io] Enabling drive inhibit : %s\n", context.c_str());
+    if ( !driveInhibited ) {
+        printf("[io] Enabling drive inhibit : %s\n", context.c_str());
+    }
+    driveInhibited = true;
     digitalWrite(DRIVE_INHIBIT_PIN, HIGH);
 }
 
 void Io::disable_drive_inhibit(std::string context) {
-    printf("[io] Disabling drive inhibit : %s\n", context.c_str());
+    if ( driveInhibited ) {
+        printf("[io] Disabling drive inhibit : %s\n", context.c_str());
+    }
+    driveInhibited = false;
     digitalWrite(DRIVE_INHIBIT_PIN, LOW);
 }
 
 bool Io::drive_is_inhibited() {
-    return digitalRead(DRIVE_INHIBIT_PIN) == HIGH;
+    return driveInhibited;
 }
 
 // CHARGE_INHIBIT output
 
 void Io::enable_charge_inhibit(std::string context) {
-    printf("[io] Enabling charge inhibit : %s\n", context.c_str());
+    if ( !chargeInhibited ) {
+        printf("[io] Enabling charge inhibit : %s\n", context.c_str());
+    }
+    chargeInhibited = true;
     digitalWrite(CHARGE_INHIBIT_PIN, HIGH);
 }
 
 void Io::disable_charge_inhibit(std::string context) {
-    printf("[io] Disabling charge inhibit : %s\n", context.c_str());
+    if ( chargeInhibited ) {
+        printf("[io] Disabling charge inhibit : %s\n", context.c_str());
+    }
+    chargeInhibited = false;
     digitalWrite(CHARGE_INHIBIT_PIN, LOW);
 }
 
 bool Io::charge_is_inhibited() {
-    return digitalRead(CHARGE_INHIBIT_PIN) == HIGH;
+    return chargeInhibited;
 }
 
 // HEATER output
 
 void Io::enable_heater() {
-    if ( !digitalRead(HEATER_ENABLE_PIN) ) {
+    if ( !heaterEnabled ) {
         printf("[io] Enabling heater\n");
-        digitalWrite(HEATER_ENABLE_PIN, HIGH);
     }
+    heaterEnabled = true;
+    digitalWrite(HEATER_ENABLE_PIN, HIGH);
 }
 
 void Io::disable_heater() {
-    if ( digitalRead(HEATER_ENABLE_PIN) == HIGH ) {
+    if ( heaterEnabled ) {
         printf("[io] Disabling heater\n");
-        digitalWrite(HEATER_ENABLE_PIN, LOW);
     }
+    heaterEnabled = false;
+    digitalWrite(HEATER_ENABLE_PIN, LOW);
 }
 
 bool Io::heater_is_enabled() {
-    return digitalRead(HEATER_ENABLE_PIN) == HIGH;
+    return heaterEnabled;
 }
 
 // Inputs

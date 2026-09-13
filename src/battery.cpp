@@ -154,14 +154,29 @@ uint32_t Battery::get_voltage() {
 
 // Recompute and store the battery voltage based on current cell voltages
 void Battery::recalculate_voltage() {
-    uint32_t newVoltage = 0;
+    /* Packs are paralleled, so when their contactors are closed they sit at the
+     * same terminal voltage. Average the packs that are actually connected;
+     * taking the maximum across all packs (as this used to) both hides a
+     * sagging pack and includes packs that are inhibited and therefore not
+     * contributing. Fall back to the highest healthy pack if none are active,
+     * so we still report something rather than zero. */
+    uint64_t total = 0;
+    int contributing = 0;
+    uint32_t highestHealthy = 0;
     for ( int p = 0; p < numPacks; p++ ) {
-        // Exclude packs with dead cells, they should be inhibited
-        if ( packs[p].get_voltage() > newVoltage && !packs[p].has_dead_cell() ) {
-            newVoltage = packs[p].get_voltage();
+        if ( packs[p].has_dead_cell() ) {
+            continue;
+        }
+        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        if ( packVoltage > highestHealthy ) {
+            highestHealthy = packVoltage;
+        }
+        if ( !packs[p].contactors_are_inhibited() ) {
+            total += packVoltage;
+            contributing++;
         }
     }
-    voltage = newVoltage;
+    voltage = ( contributing > 0 ) ? (uint32_t)( total / contributing ) : highestHealthy;
 }
 
 // Recompute the difference between the highest and lowest cell voltage
@@ -189,9 +204,13 @@ int Battery::get_index_of_high_pack() {
     uint32_t high_pack_voltage = 0;
     for ( int p = 0; p < numPacks; p++ ) {
         // Exclude packs with dead cells, they should be inhibited
-        if ( packs[p].get_voltage() > high_pack_voltage && !packs[p].has_dead_cell() ) {
+        if ( packs[p].has_dead_cell() ) {
+            continue;
+        }
+        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        if ( packVoltage > high_pack_voltage ) {
             high_pack_index = p;
-            high_pack_voltage = packs[p].get_voltage();
+            high_pack_voltage = packVoltage;
         }
     }
     return high_pack_index;
@@ -206,16 +225,23 @@ int Battery::get_index_of_low_pack() {
     if ( !has_multiple_packs() ) {
         return 0;
     }
-    int low_pack_index = 0;
-    uint32_t low_pack_voltage = 1000;
+    /* The sentinel must start ABOVE every possible pack voltage. It used to be
+     * 1000 (mV), which no real ~384,000 mV pack is ever below, so the loop
+     * never fired and this always returned pack 0. */
+    int low_pack_index = -1;
+    uint32_t low_pack_voltage = UINT32_MAX;
     for ( int p = 0; p < numPacks; p++ ) {
         // Exclude packs with dead cells, they should be inhibited
-        if ( packs[p].get_voltage() < low_pack_voltage && !packs[p].has_dead_cell() ) {
+        if ( packs[p].has_dead_cell() ) {
+            continue;
+        }
+        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
+        if ( packVoltage < low_pack_voltage ) {
             low_pack_index = p;
-            low_pack_voltage = packs[p].get_voltage();
+            low_pack_voltage = packVoltage;
         }
     }
-    return low_pack_index;
+    return ( low_pack_index < 0 ) ? 0 : low_pack_index;
 }
 
 /*
@@ -228,9 +254,12 @@ void Battery::process_voltage_update() {
     }
     // Do processing for overall battery
     recalculate_voltage();
-    recalculate_cell_delta();
+    /* Order matters: recalculate_cell_delta() reads highestCellVoltage and
+     * lowestCellVoltage, so it has to run after they are refreshed. It used to
+     * run first and therefore always used the previous cycle's values. */
     recalculate_lowest_cell_voltage();
     recalculate_highest_cell_voltage();
+    recalculate_cell_delta();
     if ( !packs_are_imbalanced() && bms != nullptr ) {
         this->bms->pack_voltages_match_heartbeat();
     }
@@ -241,8 +270,8 @@ void Battery::process_voltage_update() {
 
 // Recompute the lowest cell voltage across the whole battery
 void Battery::recalculate_lowest_cell_voltage() {
-    uint16_t newLowestCellVoltage = 10000;
-    uint16_t activePacks_newLowestCellVoltage = 10000;
+    uint16_t newLowestCellVoltage = NO_CELL_VOLTAGE_READING;
+    uint16_t activePacks_newLowestCellVoltage = NO_CELL_VOLTAGE_READING;
     for ( int p = 0; p < numPacks; p++ ) {
         uint16_t packLowestCellVoltage = packs[p].get_lowest_cell_voltage();
         // Active packs
@@ -256,13 +285,19 @@ void Battery::recalculate_lowest_cell_voltage() {
             newLowestCellVoltage = packLowestCellVoltage;
         }
     }
-    // Safety checks
-    if ( newLowestCellVoltage < CELL_EMPTY_VOLTAGE ||
-         newLowestCellVoltage > CELL_FULL_VOLTAGE  ||
-         activePacks_newLowestCellVoltage < CELL_EMPTY_VOLTAGE ||
-         activePacks_newLowestCellVoltage > CELL_FULL_VOLTAGE ) {
-        if ( bms != nullptr ) {
-            bms->set_internal_error();
+    /* Safety check. "No reading yet" is not an internal error -- module
+     * liveness covers that case -- and the flag is cleared again once the
+     * readings come back into range, which the old single latching bool
+     * never did. */
+    const bool haveLowReading = ( newLowestCellVoltage != NO_CELL_VOLTAGE_READING );
+    const bool lowOutOfRange = haveLowReading &&
+        ( newLowestCellVoltage < CELL_EMPTY_VOLTAGE ||
+          newLowestCellVoltage > CELL_FULL_VOLTAGE );
+    if ( bms != nullptr ) {
+        if ( lowOutOfRange ) {
+            bms->set_internal_error(IE_LOW_CELL_RANGE);
+        } else {
+            bms->clear_internal_error(IE_LOW_CELL_RANGE);
         }
     }
     lowestCellVoltage = newLowestCellVoltage;
@@ -303,13 +338,16 @@ void Battery::recalculate_highest_cell_voltage() {
             newHighestCellVoltage = packHighestCellVoltage;
         }
     }
-    // Safety checks
-    if ( newHighestCellVoltage < CELL_EMPTY_VOLTAGE ||
-         newHighestCellVoltage > CELL_FULL_VOLTAGE ||
-         activePacks_newHighestCellVoltage < CELL_EMPTY_VOLTAGE ||
-         activePacks_newHighestCellVoltage > CELL_FULL_VOLTAGE ) {
-        if ( bms != nullptr ) {
-            bms->set_internal_error();
+    // See recalculate_lowest_cell_voltage(): zero means "no reading yet".
+    const bool haveHighReading = ( newHighestCellVoltage != 0 );
+    const bool highOutOfRange = haveHighReading &&
+        ( newHighestCellVoltage < CELL_EMPTY_VOLTAGE ||
+          newHighestCellVoltage > CELL_FULL_VOLTAGE );
+    if ( bms != nullptr ) {
+        if ( highOutOfRange ) {
+            bms->set_internal_error(IE_HIGH_CELL_RANGE);
+        } else {
+            bms->clear_internal_error(IE_HIGH_CELL_RANGE);
         }
     }
     highestCellVoltage = newHighestCellVoltage;
@@ -344,19 +382,27 @@ uint32_t Battery::voltage_delta_between_packs() {
         return 0;
     }
     uint32_t highestPackVoltage = 0;
-    uint32_t lowestPackVoltage = 1000000; // 1000V
+    uint32_t lowestPackVoltage = UINT32_MAX;
+    int eligiblePacks = 0;
     for ( int p = 0; p < numPacks; p++ ) {
         // Exclude packs with dead cells, they should be inhibited
         if ( packs[p].has_dead_cell() ) {
             continue;
         }
-        float packVoltage = packs[p].get_voltage();
+        eligiblePacks++;
+        const uint32_t packVoltage = (uint32_t)packs[p].get_voltage();
         if ( packVoltage > highestPackVoltage ) {
             highestPackVoltage = packVoltage;
         }
         if ( packVoltage < lowestPackVoltage ) {
             lowestPackVoltage = packVoltage;
         }
+    }
+    /* With fewer than two eligible packs there is no delta to report. This used
+     * to fall through and return 0 - 1000000 as a uint32_t, i.e. ~4.29e9, which
+     * read as a catastrophic imbalance. */
+    if ( eligiblePacks < 2 ) {
+        return 0;
     }
     return highestPackVoltage - lowestPackVoltage;
 }
@@ -418,9 +464,16 @@ void Battery::update_highest_sensor_temperature() {
         }
     }
     // Saftey check
-    if ( newHighestSensorTemperature < -20 || newHighestSensorTemperature > 50 ) {
-        if ( bms != nullptr ) {
-            bms->set_internal_error();
+    /* -126 is the "no sensor data" sentinel from the module getters, not a
+     * real reading, so it must not raise an internal error. */
+    const bool haveHighTemp = ( newHighestSensorTemperature > -126 );
+    const bool highTempOutOfRange = haveHighTemp &&
+        ( newHighestSensorTemperature < -20 || newHighestSensorTemperature > 50 );
+    if ( bms != nullptr ) {
+        if ( highTempOutOfRange ) {
+            bms->set_internal_error(IE_HIGH_TEMP_RANGE);
+        } else {
+            bms->clear_internal_error(IE_HIGH_TEMP_RANGE);
         }
     }
     this->highestSensorTemperature = newHighestSensorTemperature;
@@ -443,9 +496,15 @@ void Battery::update_lowest_sensor_temperature() {
         }
     }
     // Safety check
-    if ( newLowestSensorTemperature < -20 || newLowestSensorTemperature > 50 ) {
-        if ( bms != nullptr ) {
-            this->bms->set_internal_error();
+    // 126 is the "no sensor data" sentinel from the module getters.
+    const bool haveLowTemp = ( newLowestSensorTemperature < 126 );
+    const bool lowTempOutOfRange = haveLowTemp &&
+        ( newLowestSensorTemperature < -20 || newLowestSensorTemperature > 50 );
+    if ( bms != nullptr ) {
+        if ( lowTempOutOfRange ) {
+            bms->set_internal_error(IE_LOW_TEMP_RANGE);
+        } else {
+            bms->clear_internal_error(IE_LOW_TEMP_RANGE);
         }
     }
     this->lowestSensorTemperature = newLowestSensorTemperature;
@@ -486,20 +545,31 @@ uint16_t Battery::get_max_charge_current_by_temperature() {
         return 0;
     }
 
-    // Keep track of how many packs are not inhibited
-    uint8_t activePacks = 1;
+    /* Consider ONLY the packs that are actually connected. The old version
+     * seeded activePacks at 1 and started the loop at p = 1, so pack 0 was
+     * always counted as active whether or not it was inhibited, and it took the
+     * minimum across every pack including inhibited ones -- one cold, inhibited
+     * pack dragged the whole battery's limit to zero. */
+    uint8_t activePacks = 0;
+    uint16_t smallestMaxChargeCurrent = 0;
 
-    // Get the smallest max charge current of all the packs
-    uint16_t smallestMaxChargeCurrent = packs[0].get_max_charge_current_by_temperature();
-    for ( int p = 1; p < numPacks; p++ ) {
-        if ( packs[p].get_max_charge_current_by_temperature() < smallestMaxChargeCurrent ) {
-            smallestMaxChargeCurrent = packs[p].get_max_charge_current_by_temperature();
+    for ( int p = 0; p < numPacks; p++ ) {
+        if ( packs[p].contactors_are_inhibited() ) {
+            continue;
         }
-        if ( !packs[p].contactors_are_inhibited() ) {
-            activePacks += 1;
+        int16_t packMax = packs[p].get_max_charge_current_by_temperature();
+        if ( packMax < 0 ) {
+            packMax = 0;
         }
+        if ( activePacks == 0 || (uint16_t)packMax < smallestMaxChargeCurrent ) {
+            smallestMaxChargeCurrent = (uint16_t)packMax;
+        }
+        activePacks++;
     }
 
+    if ( activePacks == 0 ) {
+        return 0;
+    }
     return smallestMaxChargeCurrent * activePacks;
 }
 
@@ -579,8 +649,18 @@ void Battery::reevaluate_contactor_inhibition_for_drive() {
         return;
     }
     int highPackId = get_index_of_high_pack();
-    uint32_t highPackVoltage = packs[highPackId].get_voltage();
-    uint32_t targetVoltage = highPackVoltage - SAFE_VOLTAGE_DELTA_BETWEEN_PACKS;
+    uint32_t highPackVoltage = (uint32_t)packs[highPackId].get_voltage();
+    /* No usable voltage reading yet: do not let anything close. */
+    if ( highPackVoltage == 0 ) {
+        enable_inhibit_contactor_close();
+        return;
+    }
+    /* Saturate rather than wrap. highPackVoltage - SAFE_VOLTAGE_DELTA underflows
+     * to ~4.29e9 for any pack voltage below the delta, which then inhibited
+     * every other pack. */
+    uint32_t targetVoltage = ( highPackVoltage > SAFE_VOLTAGE_DELTA_BETWEEN_PACKS )
+                           ? ( highPackVoltage - SAFE_VOLTAGE_DELTA_BETWEEN_PACKS )
+                           : 0;
     for ( int p = 0; p < numPacks; p++ ) {
         if ( p == highPackId ) {
             packs[p].disable_inhibit_contactor_close();
@@ -604,7 +684,12 @@ void Battery::reevaluate_contactor_inhibition_for_charge() {
         return;
     }
     int lowPackId = get_index_of_low_pack();
-    uint32_t lowPackVoltage = packs[lowPackId].get_voltage();
+    uint32_t lowPackVoltage = (uint32_t)packs[lowPackId].get_voltage();
+    // No usable voltage reading yet: do not let anything close.
+    if ( lowPackVoltage == 0 ) {
+        enable_inhibit_contactor_close();
+        return;
+    }
     uint32_t targetVoltage = lowPackVoltage + SAFE_VOLTAGE_DELTA_BETWEEN_PACKS;
     for ( int p = 0; p < numPacks; p++ ) {
         if ( p == lowPackId ) {

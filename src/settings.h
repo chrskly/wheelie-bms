@@ -116,6 +116,10 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
 #define CELL_DELTA_WARN_THRESHOLD 20                // If the cell delta is greater than this value, then raise a warning.
 #define CELL_DELTA_ALARM_THRESHOLD 200              // If the cell delta is greater than this value, then raise an alarm.
 
+/* Sentinel returned by the cell-voltage getters when no module has reported
+ * yet. Deliberately above any real reading so a "lowest cell" search works. */
+#define NO_CELL_VOLTAGE_READING 10000
+
 #define DEAD_CELL_VOLTAGE 2500                       // Min cell voltage is 2800mV, so lets consider 2500mV as dead.
 
 // Temperature
@@ -140,9 +144,24 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
 #define CELL_EMPTY_VOLTAGE 2900                     // Official min pack voltage = 269V. 269 / 6 / 16 = 2.8020833333V
 #define CELL_FULL_VOLTAGE 4000                      // Official max pack voltage = 398V. 398 / 6 / 16 = 4.1458333333V
 
+/* Charge / discharge current policy.
+ *
+ * POLICY CHOICE -- REVIEW THESE. get_max_charge_current_by_soc() was a stub that
+ * returned 0, and because it was combined with std::min() the charger was
+ * always told 0 A. update_max_discharge_current() was hardcoded to 100 A with a
+ * FIXME. The values below are deliberately conservative starting points, not
+ * manufacturer figures. */
+#define CHARGE_CURRENT_MAX_PER_PACK_A 125           // A. Matches the top of chargeCurrentMax[]
+#define DISCHARGE_CURRENT_MAX_PER_PACK_A 100        // A. Per pack, when not derated
+#define CHARGE_TAPER_START_SOC 90                   // %. Above this, taper charge current linearly to 0 at 100%
+
 // Cell balancing
-#define CELL_BALANCE_VOLTAGE 3900                   // Cell balancing should only happen above this voltage
-#define CELL_BALANCE_INTERVAL 60000                 // Interval between cell balancing sessions in milliseconds
+/* Balancing is OFF by default. The timer logic is implemented and correct, but
+ * it has never been exercised on hardware and it dissipates energy through the
+ * module bleed resistors. Set to 1 only when you are ready to test it. */
+#define CELL_BALANCING_ENABLED 0
+#define CELL_BALANCE_VOLTAGE 3900                   // mV. Only balance when the highest cell is above this
+#define CELL_BALANCE_INTERVAL_MS 60000              // Interval between cell balancing sessions, milliseconds
 
 // Communication
 #define CAN_MUTEX_TIMEOUT_MS 200                    // Timeout for the CAN mutex

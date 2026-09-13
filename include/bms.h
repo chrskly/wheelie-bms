@@ -40,6 +40,13 @@ bool send_alarm_message(struct repeating_timer *t);
 bool handle_main_CAN_messages(struct repeating_timer *t);
 bool check_liveness(struct repeating_timer *t);
 
+enum InternalErrorSource {
+    IE_LOW_CELL_RANGE  = 1 << 0,   // lowest cell voltage outside the plausible range
+    IE_HIGH_CELL_RANGE = 1 << 1,   // highest cell voltage outside the plausible range
+    IE_LOW_TEMP_RANGE  = 1 << 2,   // lowest sensor temperature outside the plausible range
+    IE_HIGH_TEMP_RANGE = 1 << 3,   // highest sensor temperature outside the plausible range
+};
+
 enum InhibitReason {
     R_NONE,
     R_TOO_HOT,
@@ -68,7 +75,7 @@ class Bms {
         uint16_t maxChargeCurrent = 0;         // Tell the charger how much current it's allowed to push into the battery
         uint16_t maxDischargeCurrent = 0;      //
         uint8_t soc = 0;                       // State of charge of the battery
-        bool internalError = false;            //
+        uint8_t internalErrorFlags = 0;        // bitmask of InternalErrorSource
         bool watchdogReboot = false;           //
         uint64_t lastTimePackVoltagesMatched = 0;  // get_clock_ms() when pack voltages last matched
         struct CANMessage canFrame;            //
@@ -133,10 +140,16 @@ class Bms {
         uint8_t get_soc();
         void recalculate_soc();
 
-        // Error
-        void set_internal_error();
-        void clear_internal_error();
-        bool get_internal_error() { return internalError; };
+        /* Error.
+         *
+         * Tracked as a bitmask of independent sources. It used to be a single
+         * bool that every check set and nothing ever cleared -- clear_internal_error()
+         * had no callers at all -- so the first out-of-range reading at boot
+         * latched it for the lifetime of the program. Each source now sets and
+         * clears its own bit. */
+        void set_internal_error(InternalErrorSource source);
+        void clear_internal_error(InternalErrorSource source);
+        bool get_internal_error() { return internalErrorFlags != 0; };
 
         uint8_t get_error_byte();
         uint8_t get_status_byte();

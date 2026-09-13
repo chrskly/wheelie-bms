@@ -120,11 +120,16 @@ class BatteryPack {
       // contactors
       int contactorInhibitPin = -1;                    // Pin which controls contactors for this pack
       int contactorFeedbackPin = -1;                   // Pin where feedback from the contactors is read
+      /* Tracked rather than read back with digitalRead(): an ESP32 pin set to
+       * plain OUTPUT has its input buffer disabled and always reads 0. Starts
+       * inhibited -- contactors must not be permitted to close before any cell
+       * data has arrived. */
+      bool contactorInhibited = true;
 
       uint32_t balanceStatus = 0;                      // Status of the balance of the pack
       uint32_t errorStatus = 0;                        //
       bool balancingEnabled = false;                   //
-      //absolute_time_t nextBalanceTime;                 // Time that the next balance should occur.
+      uint64_t nextBalanceTime = 0;                    // get_clock_ms() at which the next balance may start
       uint8_t pollMessageId = 0;                       //
       bool initialised = false;                        //
       BatteryModule modules[MODULES_PER_PACK];         // The child modules that make up this BatteryPack

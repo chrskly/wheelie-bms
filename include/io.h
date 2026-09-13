@@ -30,10 +30,16 @@ class Io {
         // Inputs
         bool ignitionOn = false;
         bool chargeEnable = false;     // Charger is asking to charge
-        /* NOTE: lastInterrupt is still written nowhere and read nowhere. It is
-         * initialised here so it is at least deterministic; deciding whether it
-         * earns its place belongs with the output-state rework (B115). */
         int lastInterrupt = 0;
+        /* Outputs. Tracked here rather than read back with digitalRead(): a pin
+         * configured with plain OUTPUT has its input buffer disabled on ESP32,
+         * so digitalRead() returns 0 no matter what was written. That made
+         * drive_is_inhibited() permanently false, which in turn meant
+         * disable_drive_inhibit() never actually cleared DRIVE_INHIBIT.
+         * Defaults are the safe state: everything inhibited until told otherwise. */
+        bool driveInhibited = true;
+        bool chargeInhibited = true;
+        bool heaterEnabled = false;
     public:
         Io() {};
         /* Configure pins. Safe to call before the rest of the system exists. */

@@ -87,11 +87,14 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
     voltage = 0.0000f;
     cellDelta = 0;
 
-    // Set up contactor control.
+    /* Set up contactor control. Starts INHIBITED: the previous code drove this
+     * low (contactors permitted) at power-on, before a single voltage reading
+     * had arrived from any module. */
     contactorInhibitPin = _contactorInhibitPin;
-    printf("[pack%d] setting up contactor control\n", id);
+    printf("[pack%d] setting up contactor control (inhibited)\n", id);
     pinMode(contactorInhibitPin, OUTPUT);
-    digitalWrite(contactorInhibitPin, LOW);
+    contactorInhibited = false;                  // force the write below
+    enable_inhibit_contactor_close();
 
     // Set up contactor feedback
     contactorFeedbackPin = _contactorFeedbackPin;
@@ -190,11 +193,11 @@ void BatteryPack::request_data() {
             pollModuleFrame.data[4] = 0x20;
             pollModuleFrame.data[5] = 0x00;
         } else {
-            if ( balancingEnabled ) {
-                pollModuleFrame.data[4] = 0x40;
-            } else {
-                pollModuleFrame.data[4] = 0x40;
-            }
+            /* Both arms of this used to assign 0x40. Balancing is driven by the
+             * target voltage in bytes 0-1 (see above), not by this byte, so
+             * there is no separate "balancing" value to select here. Collapsed
+             * rather than inventing one. */
+            pollModuleFrame.data[4] = 0x40;
             pollModuleFrame.data[5] = 0x01;
         }
         pollModuleFrame.data[6] = modulePollingCycle << 4;
@@ -252,7 +255,11 @@ void BatteryPack::read_message() {
             this->battery->process_temperature_update();
         }
         // Voltage messages
-        if (frame.id > 0x99 && frame.id < 0x180) {
+        /* Module replies occupy 0x100-0x17F: decode_voltages() splits the id
+         * into (id & 0x0F0) for the message type and (id & 0x00F) for the
+         * module. The old lower bound of 0x99 also admitted 0x09A-0x0FF, which
+         * are not module replies and would be decoded as though they were. */
+        if ( frame.id >= 0x100 && frame.id < 0x180 ) {
             decode_voltages(&frame);
             this->battery->process_voltage_update();
         }
@@ -297,14 +304,31 @@ int BatteryPack::get_pack_balance_status() {
     return balanceStatus;
 }
 
-// Return true if it's time for the pack to be balanced.
+/* Return true if it's time for the pack to be balanced.
+ *
+ * Balancing works by sending the lowest cell voltage as a target in bytes 0-1
+ * of the poll message; the modules bleed down towards it. Only worth doing near
+ * the top of the range, where the cells are on the steep part of the curve.
+ *
+ * Gated behind CELL_BALANCING_ENABLED, which defaults to off: this has never
+ * been exercised on hardware and it dissipates energy through the module bleed
+ * resistors. The timer logic itself is implemented and correct. */
 bool BatteryPack::pack_is_due_to_be_balanced() {
-    // return ( absolute_time_diff_us(get_absolute_time(), nextBalanceTime) < 0 );
-    return false;
+    if ( !CELL_BALANCING_ENABLED ) {
+        return false;
+    }
+    if ( get_highest_cell_voltage() < CELL_BALANCE_VOLTAGE ) {
+        return false;
+    }
+    if ( get_clock_ms() < nextBalanceTime ) {
+        return false;
+    }
+    reset_balance_timer();
+    return true;
 }
 
 void BatteryPack::reset_balance_timer() {
-    // nextBalanceTime = delayed_by_us(get_absolute_time(), CELL_BALANCE_INTERVAL);
+    nextBalanceTime = get_clock_ms() + CELL_BALANCE_INTERVAL_MS;
 }
 
 
@@ -330,7 +354,7 @@ void BatteryPack::recalculate_total_voltage() {
 
 // Return the voltage of the lowest cell in the pack
 uint16_t BatteryPack::get_lowest_cell_voltage() {
-    uint16_t lowestCellVoltage = 10000;
+    uint16_t lowestCellVoltage = NO_CELL_VOLTAGE_READING;
     for ( int m = 0; m < numModules; m++ ) {
         // skip modules with incomplete cell data
         if ( !modules[m].all_module_data_populated() ) {
@@ -460,7 +484,7 @@ void BatteryPack::recalculate_cell_delta() {
     /* With no populated modules the getters return their sentinels (0 and
      * 10000), which used to underflow to a huge value and then truncate into a
      * uint8_t. Report no delta until there is real data on both ends. */
-    if ( highest == 0 || lowest == 10000 || highest < lowest ) {
+    if ( highest == 0 || lowest == NO_CELL_VOLTAGE_READING || highest < lowest ) {
         cellDelta = 0;
         return;
     }
@@ -576,24 +600,25 @@ void BatteryPack::process_temperature_update() {
 
 // Prevent the contactors for this pack from closing
 void BatteryPack::enable_inhibit_contactor_close() {
-    if ( !contactors_are_inhibited() ) {
+    if ( !contactorInhibited ) {
         printf("[pack%d][enable_inhibit_contactor_close] Enabling inhibit of contactor close for pack\n", id);
-        //gpio_put(INHIBIT_CONTACTOR_PINS[id], 1);
-        digitalWrite(INHIBIT_CONTACTOR_PINS[id], HIGH);
     }
+    contactorInhibited = true;
+    digitalWrite(contactorInhibitPin, HIGH);
 }
 
 // Allow the contactors for this pack to close
 void BatteryPack::disable_inhibit_contactor_close() {
-    if ( contactors_are_inhibited() ) {
+    if ( contactorInhibited ) {
         printf("[pack%d][disable_inhibit_contactor_close] Disabling inhibit of contactor close for pack\n", id);
-        digitalWrite(INHIBIT_CONTACTOR_PINS[id], LOW);
     }
+    contactorInhibited = false;
+    digitalWrite(contactorInhibitPin, LOW);
 }
 
 // Return true if the contactors for this pack are currently not allowed to close
 bool BatteryPack::contactors_are_inhibited() {
-    return digitalRead(INHIBIT_CONTACTOR_PINS[id]);
+    return contactorInhibited;
 }
 
 bool BatteryPack::contactors_are_welded() {

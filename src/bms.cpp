@@ -612,7 +612,7 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     state = &state_standby;
     io = _io;
     shunt = _shunt;
-    internalError = false;
+    internalErrorFlags = 0;
     statusLight = StatusLight(this);
     chargeInhibitReason = R_NONE;
     driveInhibitReason = R_NONE;
@@ -832,28 +832,44 @@ uint8_t Bms::get_soc() {
  * 0 khw/ah == 100% charged. Value goes negative as we draw energy from the pack.
  */
 void Bms::recalculate_soc() {
+    /* The shunt counter reads 0 at full and goes negative as energy is drawn,
+     * so remaining = capacity + counter. Computed in 64-bit and clamped: the
+     * old expression assigned an unclamped signed result straight into a
+     * uint8_t, so a counter below -capacity wrapped round to a large SoC. */
+    int64_t capacity;
+    int64_t remaining;
     if ( CALCULATE_SOC_FROM_AMP_SECONDS == 1 ) {
-        soc = 100 * (BATTERY_CAPACITY_AS + shunt->get_ampSeconds()) / BATTERY_CAPACITY_AS;
+        capacity  = (int64_t)BATTERY_CAPACITY_AS;
+        remaining = capacity + (int64_t)shunt->get_ampSeconds();
     } else {
-        soc = 100 * (BATTERY_CAPACITY_WH + shunt->get_wattHours()) / BATTERY_CAPACITY_WH;
+        capacity  = (int64_t)BATTERY_CAPACITY_WH;
+        remaining = capacity + (int64_t)shunt->get_wattHours();
     }
+    if ( capacity <= 0 ) {
+        soc = 0;
+        return;
+    }
+    int64_t percent = ( 100 * remaining ) / capacity;
+    if ( percent < 0 )   { percent = 0; }
+    if ( percent > 100 ) { percent = 100; }
+    soc = (uint8_t)percent;
 }
 
 // Error
 
-void Bms::set_internal_error() {
-    internalError = true;
+void Bms::set_internal_error(InternalErrorSource source) {
+    internalErrorFlags |= (uint8_t)source;
 }
 
-void Bms::clear_internal_error() {
-    internalError = false;
+void Bms::clear_internal_error(InternalErrorSource source) {
+    internalErrorFlags &= (uint8_t)~source;
 }
 
 // Combine error bits into error byte to send out in status CAN message
 uint8_t Bms::get_error_byte() {
     return (
         0x00 | \
-        internalError | \
+        (internalErrorFlags != 0) | \
         battery->packs_are_imbalanced() << 1 | \
         shunt->is_dead() << 2 | \
         illegalStateTransition << 3 | \
@@ -907,9 +923,27 @@ void Bms::do_welding_checks() {
 
 // Charging
 
-// FIXME account for inhibited packs
+/* Charge current ceiling as a function of state of charge: unrestricted below
+ * CHARGE_TAPER_START_SOC, then tapering linearly to zero at 100%.
+ *
+ * This used to be `return 0`, and since update_max_charge_current() takes the
+ * min() of this and the temperature limit, the charger was told 0 A always.
+ * The taper is a conservative default policy, not a manufacturer curve --
+ * see the note in settings.h. Cell-level overvoltage protection is separate
+ * and still handled by has_full_cell(). */
 uint16_t Bms::get_max_charge_current_by_soc() {
-    return 0;
+    const uint16_t unrestricted = (uint16_t)( CHARGE_CURRENT_MAX_PER_PACK_A * NUM_PACKS );
+    const uint8_t currentSoc = get_soc();
+
+    if ( currentSoc >= 100 ) {
+        return 0;
+    }
+    if ( currentSoc < CHARGE_TAPER_START_SOC ) {
+        return unrestricted;
+    }
+    const uint32_t taperSpan = 100u - CHARGE_TAPER_START_SOC;
+    const uint32_t remaining = 100u - currentSoc;
+    return (uint16_t)( ( (uint32_t)unrestricted * remaining ) / taperSpan );
 }
 
 void Bms::update_max_charge_current() {
@@ -925,9 +959,16 @@ uint16_t Bms::get_max_charge_current() {
     return maxChargeCurrent;
 }
 
+/* Discharge current ceiling. Previously hardcoded to 100 A regardless of
+ * temperature, cell state or how many packs were actually connected.
+ * Conservative policy -- see the note in settings.h. */
 void Bms::update_max_discharge_current() {
-    // FIXME actual implementation
-    maxDischargeCurrent = 100;
+    if ( battery->too_hot() || drive_is_inhibited() || battery->has_empty_cell() ) {
+        maxDischargeCurrent = 0;
+        return;
+    }
+    const uint8_t activePacks = battery->number_of_active_packs();
+    maxDischargeCurrent = (uint16_t)( DISCHARGE_CURRENT_MAX_PER_PACK_A * activePacks );
 }
 
 uint16_t Bms::Bms::get_max_discharge_current() {

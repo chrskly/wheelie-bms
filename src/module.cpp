@@ -143,8 +143,16 @@ void BatteryModule::set_cell_voltage(int cellIndex, uint16_t newCellVoltage) {
     cellVoltage[cellIndex] = newCellVoltage;
 }
 
-// Return true if any of the cells in the module are under min voltage
+/* Return true if any of the cells in the module are under min voltage.
+ *
+ * These three predicates all bail out when the module has not reported yet.
+ * Every cell reads 0 mV before the first update, which used to make the whole
+ * battery look empty and full of dead cells from power-on. An unresponsive
+ * module is caught by is_alive() instead. */
 bool BatteryModule::has_empty_cell() {
+    if ( !allModuleDataPopulated ) {
+        return false;
+    }
     for ( int c = 0; c < numCells; c++ ) {
         if ( cellVoltage[c] <= CELL_EMPTY_VOLTAGE ) {
             return true;
@@ -155,6 +163,9 @@ bool BatteryModule::has_empty_cell() {
 
 // Return true if any of the cells in the module are over max voltage
 bool BatteryModule::has_full_cell() {
+    if ( !allModuleDataPopulated ) {
+        return false;
+    }
     for ( int c = 0; c < numCells; c++ ) {
         if ( cellVoltage[c] >= CELL_FULL_VOLTAGE ) {
             return true;
@@ -167,6 +178,9 @@ bool BatteryModule::has_full_cell() {
  * Check for dead cells in the module
  */
 bool BatteryModule::has_dead_cell() {
+    if ( !allModuleDataPopulated ) {
+        return false;
+    }
     for ( int c = 0; c < numCells; c++ ) {
         if ( cellVoltage[c] <= DEAD_CELL_VOLTAGE ) {
             return true;
@@ -203,6 +217,12 @@ void BatteryModule::check_if_module_data_is_populated() {
 }
 
 bool BatteryModule::is_alive() {
+    /* lastHeartbeat == 0 means we have never heard from this module at all.
+     * Treating that as alive gave a MODULE_TTL_MS window after boot in which
+     * the module looked healthy while having reported nothing. */
+    if ( lastHeartbeat == 0 ) {
+        return false;
+    }
     return ( get_clock_ms() - lastHeartbeat ) < MODULE_TTL_MS;
 }
 
