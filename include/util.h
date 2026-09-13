@@ -39,6 +39,23 @@ void zero_frame(CANMessage* frame);
 void print_frame(CANMessage* frame);
 
 /*
+ * Little-endian field writers for CAN payloads.
+ *
+ * Every multi-byte field in this codebase used to be written by hand as
+ *     data[n]   = (uint8_t)(value) && 0xFF;
+ *     data[n+1] = (uint8_t)(value) >> 8;
+ * which is wrong twice over: `&&` is a logical AND yielding 0 or 1, and
+ * truncating to uint8_t before shifting right by 8 always yields 0. Use these
+ * instead of open-coding the split.
+ *
+ * Writes are ignored (rather than running off the end of the frame) if the
+ * field would not fit within the 8 payload bytes.
+ */
+void put_u16_le(CANMessage* frame, int offset, uint16_t value);
+void put_i16_le(CANMessage* frame, int offset, int16_t value);
+void put_u32_le(CANMessage* frame, int offset, uint32_t value);
+
+/*
  * Create an auto-reload FreeRTOS software timer and start it, reporting failure
  * rather than returning a handle nobody checks. Returns NULL on failure.
  *

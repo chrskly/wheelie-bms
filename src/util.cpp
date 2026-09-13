@@ -45,6 +45,28 @@ void print_frame(CANMessage* frame) {
     printf("\n");
 }
 
+void put_u16_le(CANMessage* frame, int offset, uint16_t value) {
+    if ( frame == nullptr || offset < 0 || offset + 2 > 8 ) {
+        return;
+    }
+    frame->data[offset]     = (uint8_t)( value & 0xFF );
+    frame->data[offset + 1] = (uint8_t)( (value >> 8) & 0xFF );
+}
+
+void put_i16_le(CANMessage* frame, int offset, int16_t value) {
+    put_u16_le(frame, offset, (uint16_t)value);
+}
+
+void put_u32_le(CANMessage* frame, int offset, uint32_t value) {
+    if ( frame == nullptr || offset < 0 || offset + 4 > 8 ) {
+        return;
+    }
+    frame->data[offset]     = (uint8_t)( value & 0xFF );
+    frame->data[offset + 1] = (uint8_t)( (value >>  8) & 0xFF );
+    frame->data[offset + 2] = (uint8_t)( (value >> 16) & 0xFF );
+    frame->data[offset + 3] = (uint8_t)( (value >> 24) & 0xFF );
+}
+
 TimerHandle_t create_and_start_timer(const char* name, uint32_t periodMs, TimerCallbackFunction_t callback) {
     if ( periodMs == 0 ) {
         printf("[util] ERROR timer '%s' has a zero period\n", name);

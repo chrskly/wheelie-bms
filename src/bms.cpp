@@ -147,14 +147,13 @@ void send_limits_message_callback(TimerHandle_t xTimer) {
     CANMessage limitsFrame;
     zero_frame(&limitsFrame);
     limitsFrame.id = 0x351;
-    limitsFrame.data[0] = (uint8_t)( battery.get_max_voltage() * 10 ) && 0xFF;
-    limitsFrame.data[1] = (uint8_t)( battery.get_max_voltage() * 10 ) >> 8;
-    limitsFrame.data[2] = (uint8_t)( bms.get_max_charge_current() * 10 ) && 0xFF;
-    limitsFrame.data[3] = (uint8_t)( bms.get_max_charge_current() * 10 ) >> 8;
-    limitsFrame.data[4] = (uint8_t)( bms.get_max_discharge_current() * 10 ) && 0xFF;
-    limitsFrame.data[5] = (uint8_t)( bms.get_max_discharge_current() * 10 ) >> 8;
-    limitsFrame.data[6] = (uint8_t)( battery.get_min_voltage() * 10 ) && 0xFF;
-    limitsFrame.data[7] = (uint8_t)( battery.get_min_voltage() * 10 ) >> 8;
+    /* FIXME B83: get_max_voltage()/get_min_voltage() return millivolts, but this
+     * field is scaled 0.1 V, so these values are still 1000x too large. The
+     * encoding is now correct; the units are fixed in the scaling pass. */
+    put_u16_le(&limitsFrame, 0, (uint16_t)( battery.get_max_voltage() * 10 ));
+    put_u16_le(&limitsFrame, 2, (uint16_t)( bms.get_max_charge_current() * 10 ));
+    put_u16_le(&limitsFrame, 4, (uint16_t)( bms.get_max_discharge_current() * 10 ));
+    put_u16_le(&limitsFrame, 6, (uint16_t)( battery.get_min_voltage() * 10 ));
     bms.send_frame(&limitsFrame, false);
 }
 
@@ -247,7 +246,7 @@ void send_bms_state_message_callback(TimerHandle_t xTimer) {
     bmsStateFrame.data[4] = bms.get_drive_inhibit_reason();
     bmsStateFrame.data[5] = bms.get_welding_byte();
     bmsStateFrame.data[6] = 0x00;
-    bmsStateFrame.data[7] = 0x00; // checksum
+    // data[7] is the checksum; send_frame() computes it because doChecksum is true
     bms.send_frame(&bmsStateFrame, true);
 }
 
@@ -280,9 +279,8 @@ void send_module_liveness_message_callback(TimerHandle_t xTimer) {
     moduleLivenessFrame.data[2] = battery.get_module_liveness_byte(16);
     moduleLivenessFrame.data[3] = battery.get_module_liveness_byte(24);
     moduleLivenessFrame.data[4] = battery.get_module_liveness_byte(32);
-    moduleLivenessFrame.data[5] = (uint8_t)bms.get_invalid_event_count() && 0xFF;
-    moduleLivenessFrame.data[6] = (uint8_t)bms.get_invalid_event_count() >> 8;
-    moduleLivenessFrame.data[7] = 0x00;  // checksum
+    put_u16_le(&moduleLivenessFrame, 5, bms.get_invalid_event_count());
+    // data[7] is the checksum; send_frame() computes it because doChecksum is true
     bms.send_frame(&moduleLivenessFrame, true);
 }
 
@@ -302,14 +300,8 @@ void send_main_can_error_counters_message_callback(TimerHandle_t xTimer) {
     CANMessage mainCanErrorCountersFrame;
     zero_frame(&mainCanErrorCountersFrame);
     mainCanErrorCountersFrame.id = 0x354;
-    mainCanErrorCountersFrame.data[0] = bms.get_can_tx_error_count() && 0xFF;
-    mainCanErrorCountersFrame.data[1] = bms.get_can_tx_error_count() >> 8 && 0xFF;
-    mainCanErrorCountersFrame.data[2] = bms.get_can_tx_error_count() >> 16 && 0xFF;
-    mainCanErrorCountersFrame.data[3] = bms.get_can_tx_error_count() >> 24 && 0xFF;
-    mainCanErrorCountersFrame.data[4] = bms.get_can_rx_error_count() && 0xFF;
-    mainCanErrorCountersFrame.data[5] = bms.get_can_rx_error_count() >> 8 && 0xFF;
-    mainCanErrorCountersFrame.data[6] = bms.get_can_rx_error_count() >> 16 && 0xFF;
-    mainCanErrorCountersFrame.data[7] = bms.get_can_rx_error_count() >> 24 && 0xFF;
+    put_u32_le(&mainCanErrorCountersFrame, 0, bms.get_can_tx_error_count());
+    put_u32_le(&mainCanErrorCountersFrame, 4, bms.get_can_rx_error_count());
     bms.send_frame(&mainCanErrorCountersFrame, false);
 }
 
@@ -336,14 +328,11 @@ void send_soc_message_callback(TimerHandle_t xTimer) {
     CANMessage socFrame;
     zero_frame(&socFrame);
     socFrame.id = 0x355;
-    socFrame.data[0] = (uint8_t)bms.get_soc() && 0xFF;            // SoC LSB
-    socFrame.data[1] = (uint8_t)bms.get_soc() >> 8;               // SoC MSB
-    socFrame.data[2] = 0x00;                                      // SoH, not implemented
-    socFrame.data[3] = 0x00;                                      // SoH, not implemented
-    socFrame.data[4] = (uint8_t)( bms.get_soc() * 100 ) && 0xFF;  // SoC LSB, scaled
-    socFrame.data[5] = (uint8_t)( bms.get_soc() * 100 ) >> 8;     // SoC MSB, scaled
-    socFrame.data[6] = 0x00;                                      // unused
-    socFrame.data[7] = 0x00;                                      // unused
+    put_u16_le(&socFrame, 0, bms.get_soc());                          // SoC, scale 1 %
+    put_u16_le(&socFrame, 2, 0);                                      // SoH, not implemented
+    put_u16_le(&socFrame, 4, (uint16_t)( bms.get_soc() * 100 ));      // SoC, scale 0.01 %
+    socFrame.data[6] = 0x00;                                          // unused
+    socFrame.data[7] = 0x00;                                          // unused
     bms.send_frame(&socFrame, false);
 }
 
@@ -371,14 +360,13 @@ void send_status_message_callback(TimerHandle_t xTimer) {
     CANMessage statusFrame;
     zero_frame(&statusFrame);
     statusFrame.id = 0x356;
-    statusFrame.data[0] = (uint8_t)( battery.get_voltage() * 100 ) && 0xFF;
-    statusFrame.data[1] = (uint8_t)( battery.get_voltage() * 100 ) >> 8;
-    statusFrame.data[2] = (uint8_t)( shunt.get_amps() * 10 ) && 0xFF;
-    statusFrame.data[3] = (uint8_t)( shunt.get_amps() * 10 ) >> 8;
-    statusFrame.data[4] = battery.get_highest_sensor_temperature() && 0xFF;
-    statusFrame.data[5] = (uint8_t)battery.get_highest_sensor_temperature() >> 8;
-    statusFrame.data[6] = (uint8_t)( shunt.get_voltage1() * 100 ) && 0xFF;
-    statusFrame.data[7] = (uint8_t)( shunt.get_voltage1() * 100 ) >> 8;
+    /* Current and temperature are signed. FIXME B84/B85/B86/B87: the scaling of
+     * all four fields is still wrong (battery voltage is mV not V*100, shunt
+     * amps are mA not A*10, temperature is missing its *10). Encoding only. */
+    put_u16_le(&statusFrame, 0, (uint16_t)( battery.get_voltage() * 100 ));
+    put_i16_le(&statusFrame, 2, (int16_t)( shunt.get_amps() * 10 ));
+    put_i16_le(&statusFrame, 4, (int16_t)( battery.get_highest_sensor_temperature() ));
+    put_u16_le(&statusFrame, 6, (uint16_t)( shunt.get_voltage1() * 100 ));
     bms.send_frame(&statusFrame, false);
 }
 
@@ -401,14 +389,10 @@ void send_pack_can_error_counters_message_callback(TimerHandle_t xTimer) {
     CANMessage packCanErrorCountersFrame;
     zero_frame(&packCanErrorCountersFrame);
     packCanErrorCountersFrame.id = 0x357;
-    packCanErrorCountersFrame.data[0] = battery.get_can_tx_error_count_for_pack(0) && 0xFF;
-    packCanErrorCountersFrame.data[1] = battery.get_can_tx_error_count_for_pack(0) >> 8 && 0xFF;
-    packCanErrorCountersFrame.data[2] = battery.get_can_rx_error_count_for_pack(0) && 0xFF;
-    packCanErrorCountersFrame.data[3] = battery.get_can_rx_error_count_for_pack(0) >> 8 && 0xFF;
-    packCanErrorCountersFrame.data[4] = battery.get_can_tx_error_count_for_pack(1) && 0xFF;
-    packCanErrorCountersFrame.data[5] = battery.get_can_tx_error_count_for_pack(1) >> 8 && 0xFF;
-    packCanErrorCountersFrame.data[6] = battery.get_can_rx_error_count_for_pack(1) && 0xFF;
-    packCanErrorCountersFrame.data[7] = battery.get_can_rx_error_count_for_pack(1) >> 8 && 0xFF;
+    put_u16_le(&packCanErrorCountersFrame, 0, battery.get_can_tx_error_count_for_pack(0));
+    put_u16_le(&packCanErrorCountersFrame, 2, battery.get_can_rx_error_count_for_pack(0));
+    put_u16_le(&packCanErrorCountersFrame, 4, battery.get_can_tx_error_count_for_pack(1));
+    put_u16_le(&packCanErrorCountersFrame, 6, battery.get_can_rx_error_count_for_pack(1));
     bms.send_frame(&packCanErrorCountersFrame, false);
 }
 
@@ -454,8 +438,13 @@ static TimerHandle_t sendPackCanErrorCountersMessageTimer = NULL;
  *   bit 2 = contactor on
  *   bit 4 = short circuit warn
  *   bit 6 = internal error
- * byte 7 = checksum
+ * byte 7
  *   bit 0 = cell delta warn
+ *
+ * NB: byte 7 carries the cell-delta warning, NOT a checksum -- this frame is
+ * sent with doChecksum = false. Each alarm occupies a 2-bit field (Victron
+ * convention), and 0b01 means "active", so the masks below are 0x01, 0x04,
+ * 0x10 and 0x40 for bits 0, 2, 4 and 6 respectively.
  */
 
 void send_alarm_message_callback(TimerHandle_t xTimer) {
@@ -470,16 +459,16 @@ void send_alarm_message_callback(TimerHandle_t xTimer) {
     // byte 0, bit 2 : overvolt alarm
     if ( battery.has_full_cell() ) { alarmFrame.data[0] |= 0x04; }
     // byte 0, bit 4 : undervolt alarm
-    if ( battery.has_empty_cell() ) { alarmFrame.data[0] |= 0x08; }
+    if ( battery.has_empty_cell() ) { alarmFrame.data[0] |= 0x10; }
     // byte 0, bit 6 : high temp alarm
-    if ( battery.too_hot() ) { alarmFrame.data[0] |= 0x20; }
+    if ( battery.too_hot() ) { alarmFrame.data[0] |= 0x40; }
 
     // byte 1, bit 0 : low temp alarm
     if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x01; }
     // byte 1, bit 2 : high temp charge alarm
     if ( battery.too_hot() ) { alarmFrame.data[1] |= 0x04; }
     // byte 1, bit 4 : low temp charge alarm
-    if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x08; }
+    if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x10; }
     // FIXME byte 1, bit 6 : high current alarm
 
     // FIXME byte 2, bit 0 : high charge current alarm
@@ -487,7 +476,7 @@ void send_alarm_message_callback(TimerHandle_t xTimer) {
     if ( bms.charge_is_enabled() || bms.ignition_is_on() ) { alarmFrame.data[2] |= 0x04; }
     // FIXME byte 2, bit 4 : short circuit alarm
     // byte 2, bit 6 : internal error alarm
-    if ( bms.get_internal_error() ) { alarmFrame.data[2] |= 0x20; }
+    if ( bms.get_internal_error() ) { alarmFrame.data[2] |= 0x40; }
 
     // byte 3, bit 0 : cell delta alarm
     if ( battery.cell_delta_above_alarm() ) { alarmFrame.data[3] |= 0x01; }
@@ -496,16 +485,16 @@ void send_alarm_message_callback(TimerHandle_t xTimer) {
     // byte 4, bit 2 : overvolt warn
     if ( battery.has_full_cell() ) { alarmFrame.data[4] |= 0x04; }
     // byte 4, bit 4 : undervolt warn
-    if ( battery.has_empty_cell() ) { alarmFrame.data[4] |= 0x08; }
+    if ( battery.has_empty_cell() ) { alarmFrame.data[4] |= 0x10; }
     // byte 4, bit 6 : high temp warn
-    if ( battery.too_hot() ) { alarmFrame.data[4] |= 0x20; }
+    if ( battery.too_hot() ) { alarmFrame.data[4] |= 0x40; }
 
     // byte 5, bit 0 : low temp warn
     if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x01; }
     // byte 5, bit 2 : high temp charge warn
     if ( battery.too_hot() ) { alarmFrame.data[5] |= 0x04; }
     // byte 5, bit 4 : low temp charge warn
-    if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x08; }
+    if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x10; }
     // FIXME byte 5, bit 6 : high current warn
 
     // FIXME byte 6, bit 0 : high charge current warn
@@ -513,7 +502,7 @@ void send_alarm_message_callback(TimerHandle_t xTimer) {
     if ( bms.charge_is_enabled() || bms.ignition_is_on() ) { alarmFrame.data[6] |= 0x04; }
     // FIXME byte 6, bit 4 : short circuit warn
     // byte 6, bit 6 : internal error warn
-    if ( bms.get_internal_error() ) { alarmFrame.data[6] != 0x40; }
+    if ( bms.get_internal_error() ) { alarmFrame.data[6] |= 0x40; }
 
     // FIXME byte 7, bit 0 : cell delta warn
     if ( battery.cell_delta_above_warn() ) { alarmFrame.data[7] |= 0x01; }
@@ -545,11 +534,12 @@ static TimerHandle_t sendAlarmMessageTimer = NULL;
  * this was not a live miscompilation risk; widening simply removes the
  * reliance on that conversion and states the intent.
  *
- * NOTE: the byte order below is deliberately left exactly as it was found,
- * with data[5] as the most significant byte. The shunt actually transmits
- * these big-endian (data[2] is the MSB), so these values are still wrong --
- * that is a separate issue (B80) and is corrected in the CAN-encoding pass.
- * This change only removes the undefined behaviour.
+ * Byte order: data[5] is the most significant byte, data[2] the least. This was
+ * checked against two independent implementations of the same device (the
+ * Stm32-vcu ISA driver and its round-trip tests, which pack `value & 0xFF` into
+ * byte 2 and `value >> 24` into byte 5). An earlier review claimed this frame
+ * was big-endian and that the order here was reversed; that was wrong, and the
+ * order below is correct as-is.
  */
 static int32_t shunt_payload(const CANMessage& m) {
     return (int32_t)( ((uint32_t)m.data[5] << 24)

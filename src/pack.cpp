@@ -25,6 +25,7 @@
 #include "statemachine.h"
 #include "bms.h"
 #include "settings.h"
+#include "util.h"
 
 BatteryPack::BatteryPack() {}
 
@@ -177,8 +178,8 @@ void BatteryPack::request_data() {
         pollModuleFrame.id = 0x080 | (m);
         pollModuleFrame.len = 8;
         if ( balancingEnabled ) {
-            pollModuleFrame.data[0] = get_lowest_cell_voltage() && 0xFF;
-            pollModuleFrame.data[1] = get_lowest_cell_voltage() >> 8 && 0xFF;
+            // Balance target: the lowest cell in the pack, 16-bit little endian
+            put_u16_le(&pollModuleFrame, 0, get_lowest_cell_voltage());
         } else {
             pollModuleFrame.data[0] = 0xC7;
             pollModuleFrame.data[1] = 0x10;
