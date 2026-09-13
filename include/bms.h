@@ -47,6 +47,8 @@ enum InternalErrorSource {
     IE_HIGH_TEMP_RANGE = 1 << 3,   // highest sensor temperature outside the plausible range
 };
 
+/* Values are also used as bit positions in the inhibit reason masks, so they
+ * must stay within 0..15 and R_NONE must stay at 0. */
 enum InhibitReason {
     R_NONE,
     R_TOO_HOT,
@@ -60,6 +62,11 @@ enum InhibitReason {
     R_CRITICAL_FAULT,
     R_DEAD_CELL,
 };
+
+/* Bit for a reason within an inhibit mask. R_NONE occupies no bit. */
+static inline uint16_t inhibit_reason_bit(InhibitReason reason) {
+    return ( reason == R_NONE ) ? 0u : (uint16_t)( 1u << (int)reason );
+}
 
 /* Every member below carries a default initialiser. These run for ANY
  * constructor, including the defaulted one used for the global `bms` object,
@@ -81,8 +88,13 @@ class Bms {
         struct CANMessage canFrame;            //
         uint16_t invalidEventCounter = 0;      // Count how many times the state machine has seen an invalid event
         bool illegalStateTransition = false;   //
-        int8_t chargeInhibitReason = R_NONE;   //
-        int8_t driveInhibitReason = R_NONE;    //
+        /* Bitmasks of the reasons currently holding each inhibit on. Previously
+         * a single reason each: enable() only recorded a reason if the inhibit
+         * was not already on (so a second, more severe reason was discarded),
+         * and any single disable() call released the inhibit outright,
+         * regardless of what else still required it. */
+        uint16_t chargeInhibitReasons = 0;
+        uint16_t driveInhibitReasons = 0;
         bool posContactorWelded = false;       //
         bool negContactorWelded = false;       //
         bool packContactorsWelded[NUM_PACKS] = { false };  //
@@ -109,20 +121,22 @@ class Bms {
         // Watchdog
         void set_watchdog_reboot(bool value);
 
-        // DRIVE_INHIBIT
+        /* DRIVE_INHIBIT / CHARGE_INHIBIT.
+         *
+         * disable_*() withdraws ONE reason; the output is only released once no
+         * reason remains. clear_all_*_reasons() is the explicit "everything is
+         * resolved" escape hatch, used when entering a state that owns the
+         * decision outright. */
         void enable_drive_inhibit(std::string context, InhibitReason reason);
-        void disable_drive_inhibit(std::string context);
+        void disable_drive_inhibit(std::string context, InhibitReason reason);
+        void clear_all_drive_inhibit_reasons(std::string context);
         bool drive_is_inhibited();
-        void set_drive_inhibit_reason(InhibitReason reason);
-        void clear_drive_inhibit_reason();
         int8_t get_drive_inhibit_reason();
 
-        // CHARGE_INHIBIT
         void enable_charge_inhibit(std::string context, InhibitReason reason);
-        void disable_charge_inhibit(std::string context);
+        void disable_charge_inhibit(std::string context, InhibitReason reason);
+        void clear_all_charge_inhibit_reasons(std::string context);
         bool charge_is_inhibited();
-        void set_charge_inhibit_reason(InhibitReason reason);
-        void clear_charge_inhibit_reason();
         int8_t get_charge_inhibit_reason();
 
         // HEATER
@@ -160,6 +174,7 @@ class Bms {
         uint16_t get_invalid_event_count() { return invalidEventCounter; };
         uint8_t get_welding_byte();
         void do_welding_checks();
+        uint64_t hvContactorsShouldBeOpenSince = 0;   // get_clock_ms(), for weld-check settling
 
         void set_illegal_state_transition() { illegalStateTransition = true; }
         void clear_illegal_state_transition() { illegalStateTransition = false; }

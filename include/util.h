@@ -55,15 +55,4 @@ void put_u16_le(CANMessage* frame, int offset, uint16_t value);
 void put_i16_le(CANMessage* frame, int offset, int16_t value);
 void put_u32_le(CANMessage* frame, int offset, uint32_t value);
 
-/*
- * Create an auto-reload FreeRTOS software timer and start it, reporting failure
- * rather than returning a handle nobody checks. Returns NULL on failure.
- *
- * Timers used to be created by global static initialisers, which runs them
- * before setup() at a point where failure cannot be reported and the ordering
- * between translation units is unspecified. They are now created from the
- * explicit start() calls instead.
- */
-TimerHandle_t create_and_start_timer(const char* name, uint32_t periodMs, TimerCallbackFunction_t callback);
-
 #endif

@@ -93,8 +93,8 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
     contactorInhibitPin = _contactorInhibitPin;
     printf("[pack%d] setting up contactor control (inhibited)\n", id);
     pinMode(contactorInhibitPin, OUTPUT);
-    contactorInhibited = false;                  // force the write below
-    enable_inhibit_contactor_close();
+    digitalWrite(contactorInhibitPin, HIGH);     // CI_STARTUP is set by default
+    contactorInhibitedSince = get_clock_ms();
 
     // Set up contactor feedback
     contactorFeedbackPin = _contactorFeedbackPin;
@@ -497,6 +497,22 @@ void BatteryPack::recalculate_cell_delta() {
 void BatteryPack::process_voltage_update() {
     recalculate_total_voltage();
     recalculate_cell_delta();
+
+    /* Withdraw the startup hold once every module has given us a full set of
+     * readings. Until then the pack's contactors stay inhibited. */
+    if ( contactorInhibitReasons & CI_STARTUP ) {
+        bool allPopulated = true;
+        for ( int m = 0; m < numModules; m++ ) {
+            if ( !modules[m].all_module_data_populated() ) {
+                allPopulated = false;
+                break;
+            }
+        }
+        if ( allPopulated ) {
+            printf("[pack%d] all modules reporting, withdrawing startup contactor hold\n", id);
+            disable_inhibit_contactor_close(CI_STARTUP);
+        }
+    }
 }
 
 /*
@@ -598,31 +614,49 @@ void BatteryPack::process_temperature_update() {
 //
 //// ----
 
-// Prevent the contactors for this pack from closing
-void BatteryPack::enable_inhibit_contactor_close() {
-    if ( !contactorInhibited ) {
-        printf("[pack%d][enable_inhibit_contactor_close] Enabling inhibit of contactor close for pack\n", id);
+// Add a reason for holding this pack's contactors open
+void BatteryPack::enable_inhibit_contactor_close(ContactorInhibitReason reason) {
+    const bool wasInhibited = ( contactorInhibitReasons != 0 );
+    contactorInhibitReasons |= (uint8_t)reason;
+    if ( !wasInhibited ) {
+        printf("[pack%d][contactors] inhibiting close (reason mask 0x%02X)\n", id, contactorInhibitReasons);
+        contactorInhibitedSince = get_clock_ms();
     }
-    contactorInhibited = true;
     digitalWrite(contactorInhibitPin, HIGH);
 }
 
-// Allow the contactors for this pack to close
-void BatteryPack::disable_inhibit_contactor_close() {
-    if ( contactorInhibited ) {
-        printf("[pack%d][disable_inhibit_contactor_close] Disabling inhibit of contactor close for pack\n", id);
+/* Withdraw one reason. The contactors are only released once no reason
+ * remains -- clearing the imbalance hold must not release a dead-cell hold. */
+void BatteryPack::disable_inhibit_contactor_close(ContactorInhibitReason reason) {
+    const bool wasInhibited = ( contactorInhibitReasons != 0 );
+    contactorInhibitReasons &= (uint8_t)~reason;
+    if ( contactorInhibitReasons != 0 ) {
+        digitalWrite(contactorInhibitPin, HIGH);
+        return;
     }
-    contactorInhibited = false;
+    if ( wasInhibited ) {
+        printf("[pack%d][contactors] releasing inhibit\n", id);
+    }
     digitalWrite(contactorInhibitPin, LOW);
 }
 
 // Return true if the contactors for this pack are currently not allowed to close
 bool BatteryPack::contactors_are_inhibited() {
-    return contactorInhibited;
+    return contactorInhibitReasons != 0;
 }
 
+/* A contactor is only "welded" if the feedback says closed while we are holding
+ * it open. Returning the raw feedback level (as this used to) reports every
+ * legitimately closed contactor as welded. Allow WELD_CHECK_SETTLE_MS for the
+ * contactor to physically open before believing the feedback. */
 bool BatteryPack::contactors_are_welded() {
-    return digitalRead(contactorFeedbackPin);
+    if ( !contactors_are_inhibited() ) {
+        return false;
+    }
+    if ( ( get_clock_ms() - contactorInhibitedSince ) < WELD_CHECK_SETTLE_MS ) {
+        return false;
+    }
+    return digitalRead(contactorFeedbackPin) == HIGH;
 }
 
 

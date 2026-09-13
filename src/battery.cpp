@@ -33,23 +33,21 @@
 /*
  * Poll all packs for voltage and temperature data every second.
  */
-void poll_packs(TimerHandle_t xTimer) {
+void poll_packs() {
     extern Battery battery;
     battery.request_data();
 }
 
-static TimerHandle_t pollPacksTimer = NULL;
 
 /*
  * Handle inbound CAN messages from the battery.
  */
 
-void handle_inbound_CAN_messages(TimerHandle_t xTimer) {
+void handle_inbound_CAN_messages() {
     extern Battery battery;
     battery.read_message();
 }
 
-static TimerHandle_t handleInboundCANMessagesTimer = NULL;
 
 
 // Create all battery packs and modules
@@ -81,11 +79,6 @@ void Battery::initialise(Io* _io, Bms* _bms) {
  * Begin polling the packs. Separate from initialise() so that no timer callback
  * can touch a pack before every pack has been built.
  */
-void Battery::start() {
-    printf("[battery] Enabling polling of packs for data\n");
-    pollPacksTimer                = create_and_start_timer("pollPacks", 100, poll_packs);
-    handleInboundCANMessagesTimer = create_and_start_timer("packCanRx",   5, handle_inbound_CAN_messages);
-}
 
 //
 int Battery::print() {
@@ -485,7 +478,7 @@ int8_t Battery::get_highest_sensor_temperature() {
 
 // Return true if any sensor in the pack is over the max temperature
 bool Battery::too_hot() {
-    return highestSensorTemperature >= MAXIMUM_TEMPERATURE;
+    return tooHotLatched;
 }
 
 void Battery::update_lowest_sensor_temperature() {
@@ -517,6 +510,7 @@ int8_t Battery::get_lowest_sensor_temperature() {
 void Battery::process_temperature_update() {
     update_lowest_sensor_temperature();
     update_highest_sensor_temperature();
+    update_temperature_latches();
 }
 
 
@@ -527,10 +521,34 @@ void Battery::process_temperature_update() {
 //// ----
 
 bool Battery::too_cold_to_charge() {
-    if ( get_lowest_sensor_temperature() < CHARGE_TEMPERATURE_MINIMUM ) {
-        return true;
+    return tooColdToChargeLatched;
+}
+
+/*
+ * Apply hysteresis to the temperature thresholds.
+ *
+ * Entering a fault condition uses the bare threshold; leaving it requires
+ * TEMPERATURE_HYSTERESIS degrees of margin. Without this the health check
+ * alternated E_TOO_COLD_TO_CHARGE and E_TEMPERATURE_OK on successive cycles
+ * whenever the battery sat on a threshold, bouncing the state machine between
+ * charging and batteryHeating.
+ */
+void Battery::update_temperature_latches() {
+    if ( tooHotLatched ) {
+        if ( highestSensorTemperature <= ( MAXIMUM_TEMPERATURE - TEMPERATURE_HYSTERESIS ) ) {
+            tooHotLatched = false;
+        }
+    } else if ( highestSensorTemperature >= MAXIMUM_TEMPERATURE ) {
+        tooHotLatched = true;
     }
-    return false;
+
+    if ( tooColdToChargeLatched ) {
+        if ( lowestSensorTemperature >= ( CHARGE_TEMPERATURE_MINIMUM + TEMPERATURE_HYSTERESIS ) ) {
+            tooColdToChargeLatched = false;
+        }
+    } else if ( lowestSensorTemperature < CHARGE_TEMPERATURE_MINIMUM ) {
+        tooColdToChargeLatched = true;
+    }
 }
 
 /* 
@@ -582,11 +600,8 @@ uint16_t Battery::get_max_charge_current_by_temperature() {
 
 // Do not allow any contactors to close in any pack
 void Battery::enable_inhibit_contactor_close() {
-    if ( !all_contactors_inhibited() ) {
-        printf("[battery][enable_inhibit_contactor_close] Enabling inhibit contactor close for all packs\n");
-        for ( int p = 0; p < numPacks; p++ ) {
-            packs[p].enable_inhibit_contactor_close();
-        }
+    for ( int p = 0; p < numPacks; p++ ) {
+        packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
     }
 }
 
@@ -594,13 +609,11 @@ void Battery::enable_inhibit_contactor_close() {
  * Disable inhibit contactor close for all packs unless they have a dead cell
  */
 void Battery::disable_inhibit_contactor_close() {
-    if ( one_or_more_contactors_inhibited() ) {
-        printf("[battery][disable_inhibit_contactor_close] Disabling inhibit contactor close for all packs\n");
-        for ( int p = 0; p < numPacks; p++ ) {
-            if ( !packs[p].has_dead_cell() ) {
-                packs[p].disable_inhibit_contactor_close();
-            }
-        }
+    /* Withdraws only the imbalance hold. A pack held for a dead cell or still
+     * in startup keeps its own reason bit and stays inhibited, so the explicit
+     * has_dead_cell() check the old version needed here is now redundant. */
+    for ( int p = 0; p < numPacks; p++ ) {
+        packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
     }
 }
 
@@ -652,7 +665,9 @@ void Battery::reevaluate_contactor_inhibition_for_drive() {
     uint32_t highPackVoltage = (uint32_t)packs[highPackId].get_voltage();
     /* No usable voltage reading yet: do not let anything close. */
     if ( highPackVoltage == 0 ) {
-        enable_inhibit_contactor_close();
+        for ( int p = 0; p < numPacks; p++ ) {
+            packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
+        }
         return;
     }
     /* Saturate rather than wrap. highPackVoltage - SAFE_VOLTAGE_DELTA underflows
@@ -663,13 +678,13 @@ void Battery::reevaluate_contactor_inhibition_for_drive() {
                            : 0;
     for ( int p = 0; p < numPacks; p++ ) {
         if ( p == highPackId ) {
-            packs[p].disable_inhibit_contactor_close();
+            packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
             continue;
         }
-        if ( packs[p].get_voltage() >= targetVoltage && !packs[p].has_dead_cell() ) {
-            packs[p].disable_inhibit_contactor_close();
+        if ( (uint32_t)packs[p].get_voltage() >= targetVoltage ) {
+            packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
         } else {
-            packs[p].enable_inhibit_contactor_close();
+            packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
         }
     }
 }
@@ -687,30 +702,34 @@ void Battery::reevaluate_contactor_inhibition_for_charge() {
     uint32_t lowPackVoltage = (uint32_t)packs[lowPackId].get_voltage();
     // No usable voltage reading yet: do not let anything close.
     if ( lowPackVoltage == 0 ) {
-        enable_inhibit_contactor_close();
+        for ( int p = 0; p < numPacks; p++ ) {
+            packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
+        }
         return;
     }
     uint32_t targetVoltage = lowPackVoltage + SAFE_VOLTAGE_DELTA_BETWEEN_PACKS;
     for ( int p = 0; p < numPacks; p++ ) {
         if ( p == lowPackId ) {
-            packs[p].disable_inhibit_contactor_close();
+            packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
             continue;
         }
-        if ( packs[p].get_voltage() <= targetVoltage && !packs[p].has_dead_cell() ) {
-            packs[p].disable_inhibit_contactor_close();
+        if ( (uint32_t)packs[p].get_voltage() <= targetVoltage ) {
+            packs[p].disable_inhibit_contactor_close(CI_IMBALANCE);
         } else {
-            packs[p].enable_inhibit_contactor_close();
+            packs[p].enable_inhibit_contactor_close(CI_IMBALANCE);
         }
     }
 }
 
 /*
- * Inhibit contactors of packs with dead cells
+ * Apply or withdraw the dead-cell contactor hold, per pack.
  */
-void Battery::inhibit_contactors_of_packs_with_dead_cells() {
+void Battery::reevaluate_dead_cell_inhibition() {
     for ( int p = 0; p < numPacks; p++ ) {
         if ( packs[p].has_dead_cell() ) {
-            packs[p].enable_inhibit_contactor_close();
+            packs[p].enable_inhibit_contactor_close(CI_DEAD_CELL);
+        } else {
+            packs[p].disable_inhibit_contactor_close(CI_DEAD_CELL);
         }
     }
 }

@@ -31,6 +31,16 @@ class Bms;
 
 const uint8_t finalxor[12] = { 0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69, 0x02, 0x38, 0x76, 0x4C };
 
+/* Why a pack's contactors are being held open. Tracked as a bitmask so that
+ * independent causes cannot clobber each other: releasing the imbalance hold
+ * must not also release a dead-cell hold. The contactors stay inhibited while
+ * ANY bit is set. */
+enum ContactorInhibitReason {
+    CI_STARTUP   = 1 << 0,   // no valid module data yet
+    CI_DEAD_CELL = 1 << 1,   // this pack has a cell below DEAD_CELL_VOLTAGE
+    CI_IMBALANCE = 1 << 2,   // this pack is too far from the others to parallel safely
+};
+
 class BatteryPack {
 
    public:
@@ -85,10 +95,11 @@ class BatteryPack {
       void process_temperature_update();
 
       // Contactors
-      void enable_inhibit_contactor_close();
-      void disable_inhibit_contactor_close();
+      void enable_inhibit_contactor_close(ContactorInhibitReason reason);
+      void disable_inhibit_contactor_close(ContactorInhibitReason reason);
       bool contactors_are_inhibited();
       bool contactors_are_welded();
+      uint8_t get_contactor_inhibit_reasons() { return contactorInhibitReasons; }
 
       int16_t get_max_discharge_current();
       int16_t get_max_charge_current_by_temperature();
@@ -122,9 +133,10 @@ class BatteryPack {
       int contactorFeedbackPin = -1;                   // Pin where feedback from the contactors is read
       /* Tracked rather than read back with digitalRead(): an ESP32 pin set to
        * plain OUTPUT has its input buffer disabled and always reads 0. Starts
-       * inhibited -- contactors must not be permitted to close before any cell
-       * data has arrived. */
-      bool contactorInhibited = true;
+       * held by CI_STARTUP -- contactors must not be permitted to close before
+       * any cell data has arrived. */
+      uint8_t contactorInhibitReasons = CI_STARTUP;
+      uint64_t contactorInhibitedSince = 0;   // get_clock_ms(), for weld-check settling
 
       uint32_t balanceStatus = 0;                      // Status of the balance of the pack
       uint32_t errorStatus = 0;                        //

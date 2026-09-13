@@ -67,20 +67,3 @@ void put_u32_le(CANMessage* frame, int offset, uint32_t value) {
     frame->data[offset + 3] = (uint8_t)( (value >> 24) & 0xFF );
 }
 
-TimerHandle_t create_and_start_timer(const char* name, uint32_t periodMs, TimerCallbackFunction_t callback) {
-    if ( periodMs == 0 ) {
-        printf("[util] ERROR timer '%s' has a zero period\n", name);
-        return NULL;
-    }
-    TimerHandle_t timer = xTimerCreate(name, pdMS_TO_TICKS(periodMs), pdTRUE, NULL, callback);
-    if ( timer == NULL ) {
-        printf("[util] ERROR could not create timer '%s' (out of heap?)\n", name);
-        return NULL;
-    }
-    if ( xTimerStart(timer, 0) != pdPASS ) {
-        printf("[util] ERROR could not start timer '%s' (timer queue full?)\n", name);
-        return NULL;
-    }
-    printf("[util] timer '%s' running at %ums\n", name, (unsigned int)periodMs);
-    return timer;
-}

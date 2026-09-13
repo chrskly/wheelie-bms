@@ -26,49 +26,19 @@
 
 extern Bms bms;
 
-/*
- * Interrupt handler for ignition signal changes. This is called when the
- * ignition signal changes state (on/off). It reads the new state and sends
- * the appropriate event to the state machine.
- */
-void ignition_signal_changed() {
-    extern State state;
-    int newState = digitalRead(IGNITION_ENABLE_PIN);
-    std::string newStateStr = newState == 1 ? "on" : "off";
-    printf("[io] Ignition signal changed to : %s\n", newStateStr.c_str());
-    if ( newState ) {
-        bms.send_event(E_IGNITION_ON);
-    } else {
-        bms.send_event(E_IGNITION_OFF);
-    }
-}
-
-/*
- * Interrupt handler for charge signal changes. This is called when the
- * charge signal changes state (on/off). It reads the new state and sends
- * the appropriate event to the state machine.
- */
-void charge_signal_changed() {
-    extern State state;
-    int newState = digitalRead(CHARGE_ENABLE_PIN);
-    std::string newStateStr = newState == 1 ? "on" : "off";
-    printf("[io] Charge signal changed to : %s\n", newStateStr.c_str());
-    if ( newState ) {
-        bms.send_event(E_CHARGING_INITIATED);
-    } else {
-        bms.send_event(E_CHARGING_TERMINATED);
-    }
-}
-
 void Io::init() {
-    ignitionOn = false;
-    chargeEnable = false;
-
     // IGNITION input
     pinMode(IGNITION_ENABLE_PIN, INPUT);
 
     // CHARGE_ENABLE input
     pinMode(CHARGE_ENABLE_PIN, INPUT);
+
+    /* Seed the debounced states from the pins so the first poll does not report
+     * a spurious change. */
+    ignitionOn = ( digitalRead(IGNITION_ENABLE_PIN) == HIGH );
+    chargeEnable = ( digitalRead(CHARGE_ENABLE_PIN) == HIGH );
+    ignitionSettleCount = 0;
+    chargeEnableSettleCount = 0;
 
     // POS_CONTACTOR_FEEDBACK input
     pinMode(POS_CONTACTOR_FEEDBACK_PIN, INPUT);
@@ -97,10 +67,36 @@ void Io::init() {
     disable_heater();
 }
 
-void Io::attach_interrupts() {
-    printf("[io] attaching ignition and charge-enable interrupts\n");
-    attachInterrupt(digitalPinToInterrupt(IGNITION_ENABLE_PIN), ignition_signal_changed, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(CHARGE_ENABLE_PIN), charge_signal_changed, CHANGE);
+/*
+ * Debounce one input. Returns true if the confirmed state changed.
+ */
+static bool debounce_input(int pin, bool& state, uint8_t& settleCount) {
+    const bool level = ( digitalRead(pin) == HIGH );
+    if ( level == state ) {
+        settleCount = 0;
+        return false;
+    }
+    settleCount++;
+    if ( settleCount < IO_DEBOUNCE_SAMPLES ) {
+        return false;
+    }
+    state = level;
+    settleCount = 0;
+    return true;
+}
+
+void Io::poll_inputs() {
+    extern Bms bms;
+
+    if ( debounce_input(IGNITION_ENABLE_PIN, ignitionOn, ignitionSettleCount) ) {
+        printf("[io] Ignition signal changed to : %s\n", ignitionOn ? "on" : "off");
+        bms.send_event( ignitionOn ? E_IGNITION_ON : E_IGNITION_OFF );
+    }
+
+    if ( debounce_input(CHARGE_ENABLE_PIN, chargeEnable, chargeEnableSettleCount) ) {
+        printf("[io] Charge signal changed to : %s\n", chargeEnable ? "on" : "off");
+        bms.send_event( chargeEnable ? E_CHARGING_INITIATED : E_CHARGING_TERMINATED );
+    }
 }
 
 // REMINDER : THESE OUTPUTS ARE A LOW SIDE SWITCHES.
@@ -175,18 +171,20 @@ bool Io::heater_is_enabled() {
 
 // Inputs
 
+/* Report the debounced state rather than re-reading the pin, so every caller
+ * within a cycle sees the same value as the event that was dispatched. */
 bool Io::ignition_is_on() {
-    return digitalRead(IGNITION_ENABLE_PIN) == HIGH;
+    return ignitionOn;
 }
 
 bool Io::charge_enable_is_on() {
-    return digitalRead(CHARGE_ENABLE_PIN) == HIGH;
+    return chargeEnable;
 }
 
-bool Io::pos_contactor_is_welded() {
+bool Io::pos_contactor_feedback_closed() {
     return digitalRead(POS_CONTACTOR_FEEDBACK_PIN) == HIGH;
 }
 
-bool Io::neg_contactor_is_welded() {
+bool Io::neg_contactor_feedback_closed() {
     return digitalRead(NEG_CONTACTOR_FEEDBACK_PIN) == HIGH;
 }

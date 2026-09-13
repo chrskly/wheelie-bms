@@ -24,17 +24,6 @@
 #include "util.h"
 
 
-void process_led_blink_step(TimerHandle_t xTimer) {
-    //Bms* bms = static_cast<Bms*>(t->user_data);
-    extern Bms bms;
-    bms.led_blink();
-}
-
-static TimerHandle_t processLedBlinkTimer = NULL;
-
-void statuslight_start_blink_timer() {
-    processLedBlinkTimer = create_and_start_timer("ledBlink", 100, process_led_blink_step);
-}
 
 StatusLight::StatusLight(Bms* _bms) {
     on = false;

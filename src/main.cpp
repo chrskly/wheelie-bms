@@ -137,8 +137,9 @@ void setup() {
      *   1. io.init()             - pins only, no interrupts yet
      *   2. battery.initialise()  - builds packs in place (needs SPI + CAN clock)
      *   3. bms.init()            - main CAN port, needs a built battery
-     *   4. *.start()             - only now may timer callbacks run
-     *   5. io.attach_interrupts()- only now may an edge drive the state machine
+     *   4. bms.start()           - starts the single worker task that runs all
+     *                               periodic work, polls the inputs and is the
+     *                               only thing that enters the state machine
      * The objects themselves are globals and are constructed once; never
      * assign a freshly-built temporary over them, because Bms, BatteryPack and
      * BatteryModule all hand out pointers to `this`. */
@@ -146,10 +147,7 @@ void setup() {
     battery.initialise(&io, &bms);
     bms.init(&battery, &io, &shunt);
 
-    battery.start();
     bms.start();
-
-    io.attach_interrupts();
 
     // enable_status_print();
 

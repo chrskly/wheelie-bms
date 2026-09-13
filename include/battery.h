@@ -41,6 +41,11 @@ class Battery {
       uint16_t cellDelta = 0;                  // Largest cell delta of any pack, in mV
       float lowestSensorTemperature = 0;       //
       float highestSensorTemperature = 0;      //
+      /* Latched threshold results, updated in process_temperature_update().
+       * too_hot() / too_cold_to_charge() just read these, so they stay pure
+       * getters and every caller in a given cycle sees the same answer. */
+      bool tooHotLatched = false;
+      bool tooColdToChargeLatched = false;
       Bms* bms = nullptr;
       // mutex_t* canMutex;
       Io* io = nullptr;
@@ -50,10 +55,9 @@ class Battery {
       /* Two-phase startup, deliberately:
        *   initialise() builds the packs (each module stores a back-pointer, so
        *     the packs must be built in place, never copy-assigned);
-       *   start() begins polling. Nothing may run on a timer until every pack
-       *     exists and `bms` is set. */
+       *   the BMS worker task begins polling. Nothing may run periodically
+       *     until every pack exists and `bms` is set. */
       void initialise(Io* _io, Bms* _bms);
-      void start();
       int print();
 
       void request_data();
@@ -95,6 +99,7 @@ class Battery {
       void update_lowest_sensor_temperature();
       int8_t get_lowest_sensor_temperature();
       void process_temperature_update();
+      void update_temperature_latches();
       bool too_cold_to_charge();
       uint16_t get_max_charge_current_by_temperature();
 
@@ -107,7 +112,10 @@ class Battery {
       bool all_contactors_inhibited();
       void reevaluate_contactor_inhibition_for_drive();
       void reevaluate_contactor_inhibition_for_charge();
-      void inhibit_contactors_of_packs_with_dead_cells();
+      /* Applies AND withdraws the dead-cell hold, so a pack whose cell recovers
+       * is released again. The old inhibit-only version had no counterpart, so
+       * a pack held for a dead cell stayed held for the life of the program. */
+      void reevaluate_dead_cell_inhibition();
 
       uint8_t get_module_liveness_byte(int8_t moduleId);
       bool is_alive();

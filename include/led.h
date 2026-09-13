@@ -25,10 +25,9 @@
 
 class Bms;
 
-/* Creates and starts the LED blink timer. Called from Bms::start(). The timer
- * used to be created at global static-init time and then never started, so the
- * status light never blinked. */
-void statuslight_start_blink_timer();
+/* The blink step is driven from the BMS worker task. It used to have its own
+ * software timer, created at global static-init time and then never started,
+ * so the status light never blinked at all. */
 
 enum LED_MODE {
     STANDBY,

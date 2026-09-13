@@ -126,6 +126,11 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
 #define PACK_TEMP_SAMPLE_INTERVAL_MS 60000          // How often to sample the pack temperature, in milliseconds.
                                                     // temperatureDelta is therefore a per-minute rate, which is
                                                     // what the charge derating logic expects.
+/* Hysteresis band, in degrees C, applied to the too-hot and too-cold-to-charge
+ * thresholds. Without it the health check flips state every cycle when sitting
+ * on a threshold, which oscillated the BMS between charging and batteryHeating. */
+#define TEMPERATURE_HYSTERESIS 2
+
 #define WARNING_TEMPERATURE 30                      // 
 #define MAXIMUM_TEMPERATURE 50                      // Stop everything if the battery is above this temperature
 #define CHARGE_TEMPERATURE_MINIMUM -10              // minimum temperature required to allow charging
@@ -162,6 +167,22 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
 #define CELL_BALANCING_ENABLED 0
 #define CELL_BALANCE_VOLTAGE 3900                   // mV. Only balance when the highest cell is above this
 #define CELL_BALANCE_INTERVAL_MS 60000              // Interval between cell balancing sessions, milliseconds
+
+/* The single task that runs all periodic BMS work. Priority sits above the
+ * idle task and below the ACAN2515 driver task (16), which must stay
+ * responsive to service the MCP2515s. */
+#define BMS_WORKER_TICK_MS 5
+#define BMS_WORKER_STACK_BYTES 8192
+#define BMS_WORKER_PRIORITY 3
+
+/* Consecutive agreeing samples required before an input change is accepted.
+ * Inputs are polled every IO_POLL_INTERVAL_MS, so this is the debounce time. */
+#define IO_DEBOUNCE_SAMPLES 3
+#define IO_POLL_INTERVAL_MS 10
+
+/* How long a contactor must have been commanded open before its feedback is
+ * believed for weld detection. Contactors take time to physically open. */
+#define WELD_CHECK_SETTLE_MS 500
 
 // Communication
 #define CAN_MUTEX_TIMEOUT_MS 200                    // Timeout for the CAN mutex

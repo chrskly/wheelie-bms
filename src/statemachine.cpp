@@ -64,7 +64,6 @@ extern Shunt shunt;
 void state_standby(Event event) {
     // Safeties
     bms.disable_heater();
-    bms.do_welding_checks();
 
     switch (event) {
         case E_TOO_COLD_TO_CHARGE:
@@ -72,7 +71,7 @@ void state_standby(Event event) {
             break;
         case E_TEMPERATURE_OK:
             if ( ! battery.has_full_cell() ) {
-                bms.disable_charge_inhibit("[S02] no longer too cold to charge");
+                bms.disable_charge_inhibit("[S02] no longer too cold to charge", R_TOO_COLD);
             }
             break;
         case E_TOO_HOT:
@@ -86,7 +85,8 @@ void state_standby(Event event) {
             break;
         case E_BATTERY_NOT_EMPTY:
             if ( ! battery.too_hot() ) {
-                bms.disable_charge_inhibit("[S06] battery not full");
+                bms.disable_charge_inhibit("[S06] battery neither empty nor full", R_BATTERY_FULL);
+                bms.disable_charge_inhibit("[S06] battery neither empty nor full", R_BATTERY_EMPTY);
             }
             break;
         case E_BATTERY_FULL:
@@ -150,19 +150,28 @@ void state_standby(Event event) {
             bms.set_state(&state_criticalFault, "dead module");
             break;
         case E_MODULES_ALL_RESPONSIVE:
-            break;  // Valid event, but we don't need to do anything with it.
+            /* Withdraw the holds this resolves. Nothing in standby used to clear
+             * DRIVE_INHIBIT at all, so a hold taken here outlived its cause. */
+            bms.disable_charge_inhibit("[S14] modules responsive", R_MODULE_UNRESPONSIVE);
+            bms.disable_drive_inhibit("[S15] modules responsive", R_MODULE_UNRESPONSIVE);
+            break;
         case E_SHUNT_UNRESPONSIVE:
             bms.enable_charge_inhibit("[S12] dead shunt", R_SHUNT_UNRESPONSIVE);
             bms.enable_drive_inhibit("[S13] dead shunt", R_SHUNT_UNRESPONSIVE);
             bms.set_state(&state_criticalFault, "dead shunt");
             break;
         case E_SHUNT_RESPONSIVE:
-            break;  // Valid event, but we don't need to do anything with it.
+            bms.disable_charge_inhibit("[S16] shunt responsive", R_SHUNT_UNRESPONSIVE);
+            bms.disable_drive_inhibit("[S17] shunt responsive", R_SHUNT_UNRESPONSIVE);
+            break;
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
             printf("WARNING : invalid event : UNKNOWN while in standby state\n");
@@ -184,8 +193,13 @@ void state_standby(Event event) {
  *   battery too hot.
  */
 void state_drive(Event event) {
-    // Safeties
-    bms.disable_drive_inhibit("[D00] driving");
+    /* Safeties. Withdraw only the reasons that being in the drive state actually
+     * resolves -- a blanket clear would also release a fault hold. Faults
+     * transition out of this state, and each fault state withdraws its own
+     * reason on exit. */
+    bms.disable_drive_inhibit("[D00] driving", R_CHARGING);
+    bms.disable_drive_inhibit("[D00] driving", R_BATTERY_EMPTY);
+    bms.disable_drive_inhibit("[D00] driving", R_ILLEGAL_STATE_TRANSITION);
     bms.disable_heater();
 
     switch (event) {
@@ -194,7 +208,7 @@ void state_drive(Event event) {
             break;
         case E_TEMPERATURE_OK:
             if ( ! battery.has_full_cell() ) {
-                bms.disable_charge_inhibit("[D02] not too cold to charge");
+                bms.disable_charge_inhibit("[D02] not too cold to charge", R_TOO_COLD);
             }
             break;
         case E_TOO_HOT:
@@ -208,17 +222,19 @@ void state_drive(Event event) {
             break;
         case E_BATTERY_NOT_EMPTY:
             if ( ! battery.too_cold_to_charge() ) {
-                bms.disable_charge_inhibit("[D06] battery not empty");
+                bms.disable_charge_inhibit("[D06] battery not empty", R_BATTERY_EMPTY);
             }
             break;
         case E_BATTERY_FULL:
             bms.enable_charge_inhibit("[D07] full battery", R_BATTERY_FULL);
             break;
         case E_PACKS_IMBALANCED:
-            battery.reevaluate_contactor_inhibition_for_drive();
-            break;
         case E_PACKS_NOT_IMBALANCED:
-            battery.reevaluate_contactor_inhibition_for_drive();
+            /* Deliberately does nothing. Changing contactor inhibition here
+             * would open a pack contactor while current is flowing, which arcs
+             * and welds it -- see Note 2 at the top of this file. Both of these
+             * used to call reevaluate_contactor_inhibition_for_drive(). The
+             * imbalance is re-evaluated on the way back into standby. */
             break;
         case E_IGNITION_ON:
             bms.increment_invalid_event_count();
@@ -262,12 +278,15 @@ void state_drive(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
-            printf("WARNING : invalid event : UNKNOWN while in standby state\n");
+            printf("WARNING : invalid event : UNKNOWN while in drive state\n");
     }
 }
 
@@ -296,7 +315,7 @@ void state_batteryHeating(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_TEMPERATURE_OK:
             bms.disable_heater();
-            bms.disable_charge_inhibit("[H01] battery warmed to minimum charging temperature");
+            bms.disable_charge_inhibit("[H01] battery warmed to minimum charging temperature", R_TOO_COLD);
             bms.set_state(&state_charging, "battery warmed to minimum charging temperature");
             break;
         case E_TOO_HOT:
@@ -310,6 +329,8 @@ void state_batteryHeating(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_BATTERY_FULL:
             bms.disable_heater();
+            // Was transitioning into the charging state without inhibiting charge.
+            bms.enable_charge_inhibit("[H12] full battery", R_BATTERY_FULL);
             bms.set_state(&state_charging, "battery full");
             break;
         case E_PACKS_IMBALANCED:
@@ -340,14 +361,14 @@ void state_batteryHeating(Event event) {
             }
             // Battery empty
             if ( battery.has_empty_cell() ) {
-                bms.disable_charge_inhibit("[H03] charge terminated but battery still empty");
+                bms.disable_charge_inhibit("[H03] charge terminated but battery still empty", R_TOO_COLD);
                 bms.set_state(&state_batteryEmpty, "charge terminated but battery still empty");
                 break;
             }
             // Drive mode
             if ( bms.ignition_is_on() ) {
-                bms.disable_charge_inhibit("[H04] charing terminated + ignition on");
-                bms.disable_drive_inhibit("[H05] charging terminated + ignition on");
+                bms.disable_charge_inhibit("[H04] charging terminated + ignition on", R_TOO_COLD);
+                bms.disable_drive_inhibit("[H05] charging terminated + ignition on", R_CHARGING);
                 bms.set_state(&state_drive, "charging terminated + ignition on");
                 break;
             }
@@ -355,8 +376,8 @@ void state_batteryHeating(Event event) {
             if ( battery.packs_are_imbalanced() ) {
                 battery.enable_inhibit_contactor_close();
             }
-            bms.disable_drive_inhibit("[H06] ignition off");
-            bms.disable_charge_inhibit("[H07] ignition off");
+            bms.disable_drive_inhibit("[H06] ignition off", R_CHARGING);
+            bms.disable_charge_inhibit("[H07] ignition off", R_TOO_COLD);
             bms.set_state(&state_standby, "charging terminated");
             break;
         case E_MODULE_UNRESPONSIVE:
@@ -375,12 +396,15 @@ void state_batteryHeating(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
-            printf("WARNING : invalid event : UNKNOWN while in standby state\n");
+            printf("WARNING : invalid event : UNKNOWN while in batteryHeating state\n");
 
     }
 }
@@ -422,12 +446,10 @@ void state_charging(Event event) {
             bms.enable_charge_inhibit("[C03] full battery", R_BATTERY_FULL);
             break;
         case E_PACKS_IMBALANCED:
-            battery.reevaluate_contactor_inhibition_for_charge();
-            break;
         case E_PACKS_NOT_IMBALANCED:
-            if ( battery.one_or_more_contactors_inhibited() ) {
-                battery.disable_inhibit_contactor_close();
-            }
+            /* Deliberately does nothing while charge current is flowing, for the
+             * same reason as the drive state -- see Note 2 at the top of this
+             * file. Re-evaluated when charging terminates. */
             break;
         case E_IGNITION_ON:
             break;  // Valid event, but we don't need to do anything with it.
@@ -459,11 +481,11 @@ void state_charging(Event event) {
             }
             // If ignition is already on, switch directly to drive mode
             if ( bms.ignition_is_on() ) {
-                bms.disable_drive_inhibit("[C05] charging terminated + ignition on");
+                bms.disable_drive_inhibit("[C05] charging terminated + ignition on", R_CHARGING);
                 bms.set_state(&state_drive, "charging terminated + ignition on");
                 break;
             }
-            bms.disable_drive_inhibit("[C06] charging terminated");
+            bms.disable_drive_inhibit("[C06] charging terminated", R_CHARGING);
             bms.set_state(&state_standby, "charging terminated");
             break;
         case E_MODULE_UNRESPONSIVE:
@@ -480,9 +502,12 @@ void state_charging(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
             printf("WARNING : invalid event : UNKNOWN while in charging state\n");
@@ -516,7 +541,7 @@ void state_batteryEmpty(Event event) {
             bms.enable_charge_inhibit("[E01] too cold to charge", R_TOO_COLD);
             break;
         case E_TEMPERATURE_OK:
-            bms.disable_charge_inhibit("[E02] no longer too cold to charge");
+            bms.disable_charge_inhibit("[E02] no longer too cold to charge", R_TOO_COLD);
             break;
         case E_TOO_HOT:
             bms.enable_charge_inhibit("[E03] battery too hot", R_TOO_HOT);
@@ -525,7 +550,7 @@ void state_batteryEmpty(Event event) {
         case E_BATTERY_EMPTY:
             break;  // Valid event, but we don't need to do anything with it.
         case E_BATTERY_NOT_EMPTY:
-            bms.disable_drive_inhibit("[E04] battery not empty");
+            bms.disable_drive_inhibit("[E04] battery not empty", R_BATTERY_EMPTY);
             if ( bms.ignition_is_on() ) {
                 bms.set_state(&state_drive, "battery level rose");
                 break;
@@ -536,7 +561,7 @@ void state_batteryEmpty(Event event) {
             bms.set_state(&state_standby, "battery level rose");
             break;
         case E_BATTERY_FULL:
-            bms.disable_drive_inhibit("[E05] battery not empty");
+            bms.disable_drive_inhibit("[E05] battery no longer empty", R_BATTERY_EMPTY);
             bms.enable_charge_inhibit("[E06] full battery", R_BATTERY_FULL);
             if ( bms.ignition_is_on() ) {
                 bms.set_state(&state_drive, "battery full");
@@ -599,12 +624,15 @@ void state_batteryEmpty(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
-            printf("WARNING : invalid event : UNKNOWN while in standby state\n");
+            printf("WARNING : invalid event : UNKNOWN while in batteryEmpty state\n");
     }
 }
 
@@ -649,20 +677,20 @@ void state_overTempFault(Event event) {
         case E_TEMPERATURE_OK:
             // Charge mode overrides drive mode
             if ( bms.charge_is_enabled() ) {
-                bms.disable_charge_inhibit("[T02] battery has cooled");
+                bms.disable_charge_inhibit("[T02] battery has cooled", R_TOO_HOT);
                 bms.set_state(&state_charging, "battery has cooled");
                 break;
             }
             // Drive mode
             if ( bms.ignition_is_on() ) {
-                bms.disable_charge_inhibit("[T03] battery has cooled");
-                bms.disable_drive_inhibit("[T04] battery has cooled");
+                bms.disable_charge_inhibit("[T03] battery has cooled", R_TOO_HOT);
+                bms.disable_drive_inhibit("[T04] battery has cooled", R_TOO_HOT);
                 bms.set_state(&state_drive, "battery has cooled");
                 break;
             }
             // Standby mode
-            bms.disable_drive_inhibit("[T05] battery has cooled");
-            bms.disable_charge_inhibit("[T06] battery has cooled");
+            bms.disable_drive_inhibit("[T05] battery has cooled", R_TOO_HOT);
+            bms.disable_charge_inhibit("[T06] battery has cooled", R_TOO_HOT);
             if ( battery.packs_are_imbalanced() ) {
                 battery.enable_inhibit_contactor_close();
             }
@@ -707,16 +735,19 @@ void state_overTempFault(Event event) {
             }
             break;
         case E_MODULE_UNRESPONSIVE:
+            /* Was disable_inhibit_contactor_close(), i.e. it PERMITTED the
+             * contactors to close in response to a critical fault. */
             if (! bms.ignition_is_on() && ! bms.charge_is_enabled() ) {
-                battery.disable_inhibit_contactor_close();
+                battery.enable_inhibit_contactor_close();
             }
             bms.set_state(&state_criticalFault, "dead module");
             break;
         case E_MODULES_ALL_RESPONSIVE:
             break;  // Valid event, but we don't need to do anything with it.
         case E_SHUNT_UNRESPONSIVE:
+            // Was disable_inhibit_contactor_close(); see the dead-module case above.
             if (! bms.ignition_is_on() && ! bms.charge_is_enabled() ) {
-                battery.disable_inhibit_contactor_close();
+                battery.enable_inhibit_contactor_close();
             }
             bms.set_state(&state_criticalFault, "dead shunt");
             break;
@@ -724,12 +755,15 @@ void state_overTempFault(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
-            printf("WARNING : invalid event : UNKNOWN while in standby state\n");
+            printf("WARNING : invalid event : UNKNOWN while in overTempFault state\n");
     }
 }
 
@@ -775,6 +809,8 @@ void state_illegalStateTransitionFault(Event event) {
         case E_IGNITION_OFF:
             if ( ! bms.charge_is_enabled() ) {
                 bms.clear_illegal_state_transition();
+                bms.disable_drive_inhibit("[I03] fault cleared", R_ILLEGAL_STATE_TRANSITION);
+                bms.disable_charge_inhibit("[I03] fault cleared", R_ILLEGAL_STATE_TRANSITION);
                 bms.set_state(&state_standby, "ignition and charging off");
             }
             break;
@@ -783,6 +819,8 @@ void state_illegalStateTransitionFault(Event event) {
         case E_CHARGING_TERMINATED:
             if ( ! bms.ignition_is_on() ) {
                 bms.clear_illegal_state_transition();
+                bms.disable_drive_inhibit("[I04] fault cleared", R_ILLEGAL_STATE_TRANSITION);
+                bms.disable_charge_inhibit("[I04] fault cleared", R_ILLEGAL_STATE_TRANSITION);
                 bms.set_state(&state_standby, "ignition and charging off");
             }
             break;
@@ -800,12 +838,15 @@ void state_illegalStateTransitionFault(Event event) {
             break;  // Valid event, but we don't need to do anything with it.
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
-            printf("WARNING : invalid event : UNKNOWN while in standby state\n");
+            printf("WARNING : invalid event : UNKNOWN while in illegalStateTransitionFault state\n");
     }
 }
 
@@ -821,13 +862,17 @@ void state_illegalStateTransitionFault(Event event) {
  * 
  * Notes:
  * - The only way to exit this state is for the shunt AND all modules to be
- *   responsive again AND all cells 
+ *   responsive again. Both exit paths below check both conditions.
+ * - An earlier version of this comment also required "all cells", which was
+ *   never implemented and should not be: a dead cell is handled by inhibiting
+ *   that pack's contactors, not by holding the whole system in a critical
+ *   fault, so requiring it here would deadlock on a single bad cell. 
  */
 //------------------------------------------------------------------------------
 void state_criticalFault(Event event) {
     // Safeties
-    bms.enable_drive_inhibit("cT00] critical fault", R_CRITICAL_FAULT);
-    bms.enable_charge_inhibit("[T00] critical fault", R_CRITICAL_FAULT);
+    bms.enable_drive_inhibit("[CF00] critical fault", R_CRITICAL_FAULT);
+    bms.enable_charge_inhibit("[CF00] critical fault", R_CRITICAL_FAULT);
     bms.disable_heater();
 
     switch (event) {
@@ -859,8 +904,13 @@ void state_criticalFault(Event event) {
             break;
         case E_MODULES_ALL_RESPONSIVE:
             if ( ! shunt.is_dead() ) {
+                bms.disable_drive_inhibit("[CF01] critical fault cleared", R_CRITICAL_FAULT);
+                bms.disable_charge_inhibit("[CF01] critical fault cleared", R_CRITICAL_FAULT);
+                bms.disable_charge_inhibit("[CF01] critical fault cleared", R_MODULE_UNRESPONSIVE);
+                bms.disable_drive_inhibit("[CF01] critical fault cleared", R_MODULE_UNRESPONSIVE);
+                bms.disable_charge_inhibit("[CF01] critical fault cleared", R_SHUNT_UNRESPONSIVE);
+                bms.disable_drive_inhibit("[CF01] critical fault cleared", R_SHUNT_UNRESPONSIVE);
                 if ( bms.charge_is_enabled() ) {
-                    bms.disable_charge_inhibit("[CF01] critical fault cleared");
                     bms.set_state(&state_charging, "critical fault cleared");
                     break;
                 }
@@ -878,8 +928,13 @@ void state_criticalFault(Event event) {
             break;
         case E_SHUNT_RESPONSIVE:
             if ( battery.is_alive() ) {
+                bms.disable_drive_inhibit("[CF02] critical fault cleared", R_CRITICAL_FAULT);
+                bms.disable_charge_inhibit("[CF02] critical fault cleared", R_CRITICAL_FAULT);
+                bms.disable_charge_inhibit("[CF02] critical fault cleared", R_MODULE_UNRESPONSIVE);
+                bms.disable_drive_inhibit("[CF02] critical fault cleared", R_MODULE_UNRESPONSIVE);
+                bms.disable_charge_inhibit("[CF02] critical fault cleared", R_SHUNT_UNRESPONSIVE);
+                bms.disable_drive_inhibit("[CF02] critical fault cleared", R_SHUNT_UNRESPONSIVE);
                 if ( bms.charge_is_enabled() ) {
-                    bms.disable_charge_inhibit("[CF02] critical fault cleared");
                     bms.set_state(&state_charging, "critical fault cleared");
                     break;
                 }
@@ -895,9 +950,12 @@ void state_criticalFault(Event event) {
             break;
         case E_DEAD_CELL:
             if ( battery.has_multiple_packs() ) {
-                battery.inhibit_contactors_of_packs_with_dead_cells();
+                battery.reevaluate_dead_cell_inhibition();
             }
             break;
+        /* Unreachable while every Event value has an explicit case above; kept
+         * so that adding an Event without handling it here is reported rather
+         * than silently ignored. */
         default:
             bms.increment_invalid_event_count();
             printf("WARNING : invalid event : UNKNOWN while in criticalFault state\n");
@@ -911,7 +969,7 @@ typedef struct stateName {
     const char * stateName;
 } stateName;
 
-struct stateName stateNames[8] = {
+static const stateName stateNames[] = {
     {state_standby, "standby"},
     {state_drive, "drive"},
     {state_batteryHeating, "batteryHeating"},
@@ -924,7 +982,9 @@ struct stateName stateNames[8] = {
 
 // Return the name of the current state
 const char* get_state_name(State state) {
-    for ( int i=0; i < 8; i++ ) {
+    // Derived from the table rather than a hardcoded 8 in two places
+    const int stateCount = (int)( sizeof(stateNames) / sizeof(stateNames[0]) );
+    for ( int i = 0; i < stateCount; i++ ) {
         if ( state == stateNames[i].state ) {
             return stateNames[i].stateName;
         }

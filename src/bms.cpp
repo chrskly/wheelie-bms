@@ -31,10 +31,16 @@
 /*
  * Perform all health checks.
  */
-void health_check_callback(TimerHandle_t xTimer) {
+void health_check_callback() {
     extern Bms bms;
     extern Battery battery;
     extern Shunt shunt;
+
+    /* Weld detection runs every cycle regardless of state. It used to be called
+     * only from state_standby, so a contactor that welded during drive or
+     * charge was never noticed. The check itself decides when the feedback is
+     * meaningful. */
+    bms.do_welding_checks();
 
     // Do dead cell detection (if we have more than one pack)
     if ( battery.has_multiple_packs() && battery.has_dead_cell() ) {
@@ -83,12 +89,11 @@ void health_check_callback(TimerHandle_t xTimer) {
     }
 }
 
-static TimerHandle_t healthCheckTimer = NULL;
 
 /*
  * Run recurring calculations
  */
-void calculations_callback(TimerHandle_t xTimer) {
+void calculations_callback() {
     extern Bms bms;
     bms.update_max_charge_current();
     bms.update_max_discharge_current();
@@ -96,7 +101,6 @@ void calculations_callback(TimerHandle_t xTimer) {
     // TODO : range estimate
 }
 
-static TimerHandle_t calculationsTimer = NULL;
 
 
 //// ----
@@ -141,7 +145,7 @@ void Bms::send_shunt_reset_message() {
  * byte 7 = Discharge voltage MSB, scale 0.1, unit V
  */
 
-void send_limits_message_callback(TimerHandle_t xTimer) {
+void send_limits_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage limitsFrame;
@@ -157,7 +161,6 @@ void send_limits_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&limitsFrame, false);
 }
 
-static TimerHandle_t limitsMessageTimer = NULL;
 
 
 /*
@@ -212,7 +215,7 @@ static TimerHandle_t limitsMessageTimer = NULL;
  * byte 7 = checksum
  */
 
-void send_bms_state_message_callback(TimerHandle_t xTimer) {
+void send_bms_state_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage bmsStateFrame;
@@ -250,7 +253,6 @@ void send_bms_state_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&bmsStateFrame, true);
 }
 
-static TimerHandle_t bmsStateMessageTimer = NULL;
 
 
 /*
@@ -268,7 +270,7 @@ static TimerHandle_t bmsStateMessageTimer = NULL;
  * byte 7 = checksum
  */
 
-void send_module_liveness_message_callback(TimerHandle_t xTimer) {
+void send_module_liveness_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage moduleLivenessFrame;
@@ -284,7 +286,6 @@ void send_module_liveness_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&moduleLivenessFrame, true);
 }
 
-static TimerHandle_t moduleLivenessMessageTimer = NULL;
 
 /*
  * Main CAN bus tx/rx error counters message 0x354
@@ -295,7 +296,7 @@ static TimerHandle_t moduleLivenessMessageTimer = NULL;
  * byte 4 - 7 = can rx error counters (32bit counter)
  */
 
-void send_main_can_error_counters_message_callback(TimerHandle_t xTimer) {
+void send_main_can_error_counters_message_callback() {
     extern Bms bms;
     CANMessage mainCanErrorCountersFrame;
     zero_frame(&mainCanErrorCountersFrame);
@@ -305,7 +306,6 @@ void send_main_can_error_counters_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&mainCanErrorCountersFrame, false);
 }
 
-static TimerHandle_t mainCanErrorCountersMessageTimer = NULL;
 
 
 /*
@@ -323,7 +323,7 @@ static TimerHandle_t mainCanErrorCountersMessageTimer = NULL;
  * byte 7 = unused
  */
 
-void send_soc_message_callback(TimerHandle_t xTimer) {
+void send_soc_message_callback() {
     extern Bms bms;
     CANMessage socFrame;
     zero_frame(&socFrame);
@@ -336,7 +336,6 @@ void send_soc_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&socFrame, false);
 }
 
-static TimerHandle_t sendSocMessageTimer = NULL;
 
 /*
  * Status message 0x356
@@ -353,7 +352,7 @@ static TimerHandle_t sendSocMessageTimer = NULL;
  * byte 7 = Voltage MSB (measured by shunt), scale 0.01, unit V
  */
 
-void send_status_message_callback(TimerHandle_t xTimer) {
+void send_status_message_callback() {
     extern Bms bms;
     extern Battery battery;
     extern Shunt shunt;
@@ -372,7 +371,6 @@ void send_status_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&statusFrame, false);
 }
 
-static TimerHandle_t sendStatusMessageTimer = NULL;
 
 /*
  * Pack CAN bus tx/rx error counters message 0x357
@@ -385,7 +383,7 @@ static TimerHandle_t sendStatusMessageTimer = NULL;
  * byte 6 - 7 = pack 1 can rx error counters (16bit counter)
  */
 
-void send_pack_can_error_counters_message_callback(TimerHandle_t xTimer) {
+void send_pack_can_error_counters_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage packCanErrorCountersFrame;
@@ -398,7 +396,6 @@ void send_pack_can_error_counters_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&packCanErrorCountersFrame, false);
 }
 
-static TimerHandle_t sendPackCanErrorCountersMessageTimer = NULL;
 
 /*
  * Alarms message 0x35A
@@ -449,7 +446,7 @@ static TimerHandle_t sendPackCanErrorCountersMessageTimer = NULL;
  * 0x10 and 0x40 for bits 0, 2, 4 and 6 respectively.
  */
 
-void send_alarm_message_callback(TimerHandle_t xTimer) {
+void send_alarm_message_callback() {
     extern Bms bms;
     extern Battery battery;
     CANMessage alarmFrame;
@@ -512,7 +509,6 @@ void send_alarm_message_callback(TimerHandle_t xTimer) {
     bms.send_frame(&alarmFrame, false);
 }
 
-static TimerHandle_t sendAlarmMessageTimer = NULL;
 
 
 //// ----
@@ -551,7 +547,7 @@ static int32_t shunt_payload(const CANMessage& m) {
 }
 
 
-void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
+void handle_main_CAN_messages_callback() {
     CANMessage m;
     extern Shunt shunt;
     extern Bms bms;
@@ -603,7 +599,6 @@ void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
     }
 }
 
-static TimerHandle_t handleMainCanMessageTimer = NULL;
 
 
 
@@ -614,8 +609,8 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     shunt = _shunt;
     internalErrorFlags = 0;
     statusLight = StatusLight(this);
-    chargeInhibitReason = R_NONE;
-    driveInhibitReason = R_NONE;
+    chargeInhibitReasons = 0;
+    driveInhibitReasons = 0;
 
     printf("[bms][init] setting up main CAN port\n");
     ACAN_ESP32_Settings settings(500 * 1000);
@@ -642,28 +637,73 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
 }
 
 /*
- * Begin the periodic timers. Kept separate from init() so that no callback can
- * run against a half-built Battery: every one of these touches `battery`, which
- * used to be a pack array that had not been created yet.
+ * The single task that runs all periodic BMS work.
+ *
+ * Everything used to be a FreeRTOS software timer, which meant every callback
+ * ran on the shared timer service task -- a small stack shared with anything
+ * else in the system that uses timers, where one blocking SPI transaction
+ * delays every other callback. Worse, the ignition and charge-enable
+ * interrupts dispatched state machine events from interrupt context, so the
+ * state machine could be re-entered concurrently with a timer callback already
+ * inside it.
+ *
+ * Now there is exactly one task, with a known stack, and it is the only place
+ * that enters the state machine or touches battery state. Work is staggered
+ * across the 5 ms tick so no single tick does everything at once.
  */
+static void bms_worker_task(void* /*pvParameters*/) {
+    extern Bms bms;
+    extern Battery battery;
+    extern Io io;
+
+    uint32_t tick = 0;
+    TickType_t lastWake = xTaskGetTickCount();
+
+    for ( ;; ) {
+        // Every 5 ms: drain both CAN buses
+        battery.read_message();
+        handle_main_CAN_messages_callback();
+
+        // Every 10 ms: sample the debounced inputs
+        if ( ( tick % 2 ) == 0 ) {
+            io.poll_inputs();
+        }
+
+        // Every 100 ms
+        if ( ( tick % 20 ) ==  0 ) { battery.request_data(); }
+        if ( ( tick % 20 ) == 10 ) { health_check_callback(); }
+        if ( ( tick % 20 ) ==  5 ) { bms.led_blink(); }
+
+        // Every 1 s, staggered so the tick that builds one frame builds only that one
+        if ( ( tick % 200 ) ==   0 ) { send_limits_message_callback(); }
+        if ( ( tick % 200 ) ==  20 ) { send_bms_state_message_callback(); }
+        if ( ( tick % 200 ) ==  40 ) { send_main_can_error_counters_message_callback(); }
+        if ( ( tick % 200 ) ==  60 ) { send_pack_can_error_counters_message_callback(); }
+        if ( ( tick % 200 ) ==  80 ) { send_soc_message_callback(); }
+        if ( ( tick % 200 ) == 100 ) { send_status_message_callback(); }
+        if ( ( tick % 200 ) == 120 ) { send_alarm_message_callback(); }
+        if ( ( tick % 200 ) == 140 ) { calculations_callback(); }
+
+        // Every 5 s
+        if ( ( tick % 1000 ) == 160 ) { send_module_liveness_message_callback(); }
+
+        tick++;
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(BMS_WORKER_TICK_MS));
+    }
+}
+
 void Bms::start() {
-    printf("[bms][start] enabling CAN message handlers\n");
-    // outbound periodic messages
-    limitsMessageTimer                   = create_and_start_timer("limitsMessage",         1000, send_limits_message_callback);
-    bmsStateMessageTimer                 = create_and_start_timer("bmsStateMessage",        1000, send_bms_state_message_callback);
-    moduleLivenessMessageTimer           = create_and_start_timer("moduleLiveness",         5000, send_module_liveness_message_callback);
-    mainCanErrorCountersMessageTimer     = create_and_start_timer("mainCanErrCounters",     1000, send_main_can_error_counters_message_callback);
-    sendPackCanErrorCountersMessageTimer = create_and_start_timer("packCanErrCounters",     1000, send_pack_can_error_counters_message_callback);
-    sendSocMessageTimer                  = create_and_start_timer("socMessage",             1000, send_soc_message_callback);
-    sendStatusMessageTimer               = create_and_start_timer("statusMessage",          1000, send_status_message_callback);
-    sendAlarmMessageTimer                = create_and_start_timer("alarmMessage",           1000, send_alarm_message_callback);
-    // inbound main CAN
-    handleMainCanMessageTimer            = create_and_start_timer("mainCanRx",                 5, handle_main_CAN_messages_callback);
-    // periodic work
-    healthCheckTimer                     = create_and_start_timer("healthCheck",             100, health_check_callback);
-    calculationsTimer                    = create_and_start_timer("calculations",           1000, calculations_callback);
-    // status light
-    statuslight_start_blink_timer();
+    printf("[bms][start] starting BMS worker task\n");
+    const BaseType_t created = xTaskCreate(
+        bms_worker_task,
+        "bmsWorker",
+        BMS_WORKER_STACK_BYTES,
+        NULL,
+        BMS_WORKER_PRIORITY,
+        NULL);
+    if ( created != pdPASS ) {
+        printf("[bms][start] ERROR could not create the BMS worker task\n");
+    }
 }
 
 void Bms::set_state(State newState, std::string reason) {
@@ -732,66 +772,73 @@ void Bms::set_watchdog_reboot(bool value) {
 
 // DRIVE_INHIBIT
 
+/* Reasons are reported most-severe-first, so the single byte in the state
+ * message names the most important thing currently holding the inhibit on. */
+static const InhibitReason kReasonsBySeverity[] = {
+    R_CRITICAL_FAULT, R_MODULE_UNRESPONSIVE, R_SHUNT_UNRESPONSIVE, R_DEAD_CELL,
+    R_ILLEGAL_STATE_TRANSITION, R_TOO_HOT, R_TOO_COLD, R_BATTERY_EMPTY,
+    R_BATTERY_FULL, R_CHARGING,
+};
+
+static int8_t most_severe_reason(uint16_t mask) {
+    for ( unsigned i = 0; i < sizeof(kReasonsBySeverity)/sizeof(kReasonsBySeverity[0]); i++ ) {
+        if ( mask & inhibit_reason_bit(kReasonsBySeverity[i]) ) {
+            return (int8_t)kReasonsBySeverity[i];
+        }
+    }
+    return (int8_t)R_NONE;
+}
+
 void Bms::enable_drive_inhibit(std::string context, InhibitReason reason) {
-    if ( !drive_is_inhibited() ) {
-        set_drive_inhibit_reason(reason);
-        io->enable_drive_inhibit(context);
+    driveInhibitReasons |= inhibit_reason_bit(reason);
+    io->enable_drive_inhibit(context);
+}
+
+void Bms::disable_drive_inhibit(std::string context, InhibitReason reason) {
+    driveInhibitReasons &= (uint16_t)~inhibit_reason_bit(reason);
+    if ( driveInhibitReasons == 0 ) {
+        io->disable_drive_inhibit(context);
     }
 }
 
-void Bms::disable_drive_inhibit(std::string context) {
-    clear_drive_inhibit_reason();
-    if ( drive_is_inhibited() ) {
-        io->disable_drive_inhibit(context);
-    }
+void Bms::clear_all_drive_inhibit_reasons(std::string context) {
+    driveInhibitReasons = 0;
+    io->disable_drive_inhibit(context);
 }
 
 bool Bms::drive_is_inhibited() {
     return io->drive_is_inhibited();
 }
 
-void Bms::set_drive_inhibit_reason(InhibitReason reason) {
-    driveInhibitReason = reason;
-}
-
-void Bms::clear_drive_inhibit_reason() {
-    driveInhibitReason = R_NONE;
-}
-
 int8_t Bms::get_drive_inhibit_reason() {
-    return driveInhibitReason;
+    return most_severe_reason(driveInhibitReasons);
 }
 
 // CHARGE_INHIBIT
 
 void Bms::enable_charge_inhibit(std::string context, InhibitReason reason) {
-    if ( !charge_is_inhibited() ) {
-        set_charge_inhibit_reason(reason);
-        io->enable_charge_inhibit(context);
+    chargeInhibitReasons |= inhibit_reason_bit(reason);
+    io->enable_charge_inhibit(context);
+}
+
+void Bms::disable_charge_inhibit(std::string context, InhibitReason reason) {
+    chargeInhibitReasons &= (uint16_t)~inhibit_reason_bit(reason);
+    if ( chargeInhibitReasons == 0 ) {
+        io->disable_charge_inhibit(context);
     }
 }
 
-void Bms::disable_charge_inhibit(std::string context) {
-    clear_charge_inhibit_reason();
-    if ( charge_is_inhibited() ) {
-        io->disable_charge_inhibit(context);
-    }
+void Bms::clear_all_charge_inhibit_reasons(std::string context) {
+    chargeInhibitReasons = 0;
+    io->disable_charge_inhibit(context);
 }
 
 bool Bms::charge_is_inhibited() {
     return io->charge_is_inhibited();
 }
 
-void Bms::set_charge_inhibit_reason(InhibitReason reason) {
-    chargeInhibitReason = reason;
-}
-
-void Bms::clear_charge_inhibit_reason() {
-    chargeInhibitReason = R_NONE;
-}
-
 int8_t Bms::get_charge_inhibit_reason() {
-    return chargeInhibitReason;
+    return most_severe_reason(chargeInhibitReasons);
 }
 
 // HEATER
@@ -914,11 +961,33 @@ uint8_t Bms::get_welding_byte() {
 
 }
 
+/*
+ * A contactor is only "welded" if its feedback says closed at a moment when it
+ * should be open. This used to read the feedback unconditionally, so every
+ * legitimately closed contactor was reported as welded.
+ *
+ * The HVJB contactors are commanded by the inverter, not by us, so the best
+ * proxy for "should be open" is ignition off and no charge request. Allow
+ * WELD_CHECK_SETTLE_MS for them to physically open before believing feedback.
+ * The pack contactors apply the same rule against their own inhibit state --
+ * see BatteryPack::contactors_are_welded().
+ */
 void Bms::do_welding_checks() {
-    posContactorWelded = io->pos_contactor_is_welded();
-    negContactorWelded = io->neg_contactor_is_welded();
-    packContactorsWelded[0] = battery->contactor_is_welded(0);
-    packContactorsWelded[1] = battery->contactor_is_welded(1);
+    const bool hvShouldBeOpen = !ignition_is_on() && !charge_is_enabled();
+    if ( !hvShouldBeOpen ) {
+        hvContactorsShouldBeOpenSince = 0;
+    } else {
+        if ( hvContactorsShouldBeOpenSince == 0 ) {
+            hvContactorsShouldBeOpenSince = get_clock_ms();
+        }
+        if ( ( get_clock_ms() - hvContactorsShouldBeOpenSince ) >= WELD_CHECK_SETTLE_MS ) {
+            posContactorWelded = io->pos_contactor_feedback_closed();
+            negContactorWelded = io->neg_contactor_feedback_closed();
+        }
+    }
+    for ( int p = 0; p < NUM_PACKS; p++ ) {
+        packContactorsWelded[p] = battery->contactor_is_welded((uint8_t)p);
+    }
 }
 
 // Charging
