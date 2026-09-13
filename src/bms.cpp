@@ -749,6 +749,7 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
         printf("[bms][init] WARNING problem initializing main CAN port : %lu\n", errorCode);
     }
 
+#if CAN_SELF_TEST_AT_INIT
     printf("[bms][init] sending 5 test messages\n");
     for ( int i = 0; i < 5; i++ ) {
         CANMessage m;
@@ -759,6 +760,7 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
         }
         this->send_frame(&m, true);
     }
+#endif
 
 }
 
@@ -1072,11 +1074,14 @@ void Bms::clear_internal_error(InternalErrorSource source) {
 }
 
 // Combine error bits into error byte to send out in status CAN message
+/* NB: uses Bms::packs_are_imbalanced() (the debounced test the state machine
+ * acts on), not Battery's instantaneous one -- the reported bit used to
+ * disagree with the behaviour it was supposed to describe. */
 uint8_t Bms::get_error_byte() {
     return (
         0x00 | \
         (internalErrorFlags != 0) | \
-        battery->packs_are_imbalanced() << 1 | \
+        packs_are_imbalanced() << 1 | \
         shunt->is_dead() << 2 | \
         illegalStateTransition << 3 | \
         ! battery->is_alive() << 4
@@ -1278,39 +1283,9 @@ bool Bms::send_frame(CANMessage* frame, bool doChecksum) {
 }
 
 bool Bms::read_frame(CANMessage* frame) {
-    for ( int t = 0; t < READ_FRAME_RETRIES; t++ ) {    
-        // if ( !mutex_enter_timeout_ms(&canMutex, CAN_MUTEX_TIMEOUT_MS) ) {
-        //     increment_can_rx_error_count();
-        //     return false;
-        // }
-        const bool received = ACAN_ESP32::can.receive(*frame);
-        // mutex_exit(&canMutex);
-        // if ( result != MCP2515::ERROR_OK ) {
-        //     if ( result == MCP2515::ERROR_FAIL ) {
-        //         printf("[bms][read_frame] %d/%d ERROR_FAIL, try again\n", t, READ_FRAME_RETRIES);
-        //         increment_can_rx_error_count();
-        //     } else if ( result == MCP2515::ERROR_ALLTXBUSY ) {
-        //         printf("[bms][read_frame] %d/%d ERROR_ALLTXBUSY, try again\n", t, READ_FRAME_RETRIES);
-        //         increment_can_rx_error_count();
-        //     } else if ( result == MCP2515::ERROR_FAILINIT ) {
-        //         printf("[bms][read_frame] %d/%d ERROR_FAILINIT, try again\n", t, READ_FRAME_RETRIES);
-        //         increment_can_rx_error_count();
-        //     } else if ( result == MCP2515::ERROR_FAILTX ) {
-        //         printf("[bms][read_frame] %d/%d ERROR_FAILTX, try again\n", t, READ_FRAME_RETRIES);
-        //         increment_can_rx_error_count();
-        //     } else if ( result == MCP2515::ERROR_NOMSG ) {
-        //         return true;
-        //     }
-        //     continue;
-        // }
-        /* No frame waiting is the normal case, not an error. Returning true
-         * here unconditionally (as this used to) made every caller parse an
-         * uninitialised CANMessage off the stack. */
-        if ( received ) {
-            return true;
-        }
-        return false;
-    }
-    // Failed to read after all retries
-    return false;
+    /* Single attempt, deliberately. This used to sit in a READ_FRAME_RETRIES
+     * loop that returned on its first iteration either way, so the retry count
+     * never meant anything. "No frame waiting" is the normal case rather than a
+     * failure worth retrying: the caller is polled again 5ms later. */
+    return ACAN_ESP32::can.receive(*frame);
 }

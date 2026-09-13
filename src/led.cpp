@@ -30,7 +30,6 @@ StatusLight::StatusLight(Bms* _bms) {
     counter = 0;
     onDuration = 0;
     offDuration = 0;
-    bms = _bms;
 
     // Set up the LED pin
     pinMode(LED_PIN, OUTPUT);
@@ -39,6 +38,8 @@ StatusLight::StatusLight(Bms* _bms) {
 
 // Switch status light to a different mode
 void StatusLight::set_mode(LED_MODE newMode) {
+    // Start the new pattern from a clean cycle rather than mid-count
+    counter = 0;
     switch (newMode) {
         case STANDBY:
             onDuration = 1;
@@ -53,6 +54,7 @@ void StatusLight::set_mode(LED_MODE newMode) {
             offDuration = 10;
             break;
         case FAULT:
+        default:
             onDuration = 1;
             offDuration = 1;
             break;

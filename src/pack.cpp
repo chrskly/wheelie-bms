@@ -44,7 +44,6 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
     numModules = _numModules;
     numCellsPerModule = _numCellsPerModule;
     numTemperatureSensorsPerModule = _numTemperatureSensorsPerModule;
-    bms = _bms;
 
     // Build the CRC table before anything can call getcheck()
     crc8.begin();
@@ -68,18 +67,16 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
         printf("[pack%d] CAN port setup complete\n", id);
     }
 
+#if CAN_SELF_TEST_AT_INIT
     CANMessage testFrame;
-    testFrame.id = 0x000;
-    testFrame.len = 8;
-    for ( int i = 0; i < 8; i++ ) {
-        testFrame.data[i] = 0;
-    }
+    zero_frame(&testFrame);
     printf("[pack%d] sending 10 test messages\n", id);
     for ( int i = 0; i < 10; i++ ) {
         if ( !send_frame(&testFrame) ) {
             printf("[pack%d] ERROR sending test message %d\n", id, i);
         }
     }
+#endif
 
     voltage = 0.0000f;
     cellDelta = 0;
@@ -90,8 +87,11 @@ void BatteryPack::init(int _id, int CANCSPin, int _contactorInhibitPin, int _con
     contactorInhibitPin = _contactorInhibitPin;
     printf("[pack%d] setting up contactor control (inhibited)\n", id);
     pinMode(contactorInhibitPin, OUTPUT);
-    digitalWrite(contactorInhibitPin, HIGH);     // CI_STARTUP is set by default
-    contactorInhibitedSince = get_clock_ms();
+    /* Go through the method that owns this pin rather than driving it here, so
+     * the pin state, the reason mask and the weld-check timestamp cannot drift
+     * apart. The mask is cleared first so the call logs and timestamps. */
+    contactorInhibitReasons = 0;
+    enable_inhibit_contactor_close(CI_STARTUP);
 
     // Set up contactor feedback
     contactorFeedbackPin = _contactorFeedbackPin;

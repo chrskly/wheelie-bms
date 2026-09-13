@@ -42,7 +42,6 @@ class StatusLight {
         int counter = 0;
         int onDuration = 0;
         int offDuration = 0;
-        Bms* bms = nullptr;
 
     public:
         StatusLight() {};

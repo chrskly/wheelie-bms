@@ -119,7 +119,6 @@ class BatteryPack {
        * as part of Battery's array long before init() runs on it, and several of
        * these were read before init() ever assigned them. */
       ACAN2515* CAN = nullptr;                         // CAN bus connection to this pack
-      Bms* bms = nullptr;
       int numModules = 0;                              //
       int numCellsPerModule = 0;                       //
       int numTemperatureSensorsPerModule = 0;          //

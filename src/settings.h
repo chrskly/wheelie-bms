@@ -286,6 +286,14 @@ static_assert(every_pin_is_unique(),
 #define MODULE_CMD_BALANCE_ON  0x48
 #define MODULE_CMD_BALANCE_OFF 0x40
 
+/* Transmit a burst of dummy frames at init to prove each CAN port can send.
+ *
+ * OFF by default, and it should stay off on a vehicle. The main-bus burst uses
+ * IDs 0x100-0x104, which this project does not own and which may belong to
+ * another ECU; the pack-bus burst uses ID 0x000, the highest priority
+ * identifier on the bus. Useful on the bench, not on a car. */
+#define CAN_SELF_TEST_AT_INIT 0
+
 /* Give up heating after this long. A heater that cannot bring the pack up to
  * the minimum charge temperature within this window is not working, and sitting
  * in batteryHeating indefinitely means running it with no end condition. */
