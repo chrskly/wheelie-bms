@@ -246,12 +246,21 @@ void state_drive(Event event) {
             bms.enable_charge_inhibit("[D07] full battery", R_BATTERY_FULL);
             break;
         case E_PACKS_IMBALANCED:
+            /* Deliberately does nothing. ASSERTING an inhibit here can drop a
+             * contactor coil while current is flowing, which arcs and welds it
+             * -- see Note 2 at the top of this file. */
+            break;
         case E_PACKS_NOT_IMBALANCED:
-            /* Deliberately does nothing. Changing contactor inhibition here
-             * would open a pack contactor while current is flowing, which arcs
-             * and welds it -- see Note 2 at the top of this file. Both of these
-             * used to call reevaluate_contactor_inhibition_for_drive(). The
-             * imbalance is re-evaluated on the way back into standby. */
+            /* RELEASING the hold is safe in any state: it only permits the
+             * inverter to close a contactor, it never opens one. That asymmetry
+             * matters. Booting with the ignition already on goes
+             * standby -> E_IGNITION_ON -> reevaluate_contactor_inhibition_for_drive(),
+             * which correctly inhibits every pack because no voltage data has
+             * arrived yet -- and with both of these cases doing nothing, that
+             * hold was never withdrawn. The battery stayed disconnected, with
+             * zero active packs and 0 A reported, for as long as the ignition
+             * stayed on. */
+            battery.disable_inhibit_contactor_close();
             break;
         case E_IGNITION_ON:
             bms.increment_invalid_event_count();
@@ -378,12 +387,15 @@ void state_batteryHeating(Event event) {
             bms.set_state(&state_charging, "battery full");
             break;
         case E_PACKS_IMBALANCED:
-        case E_PACKS_NOT_IMBALANCED:
             /* Deliberately does nothing. This used to call
              * reevaluate_contactor_inhibition_for_charge() with a "FIXME is this
              * right?" beside it -- it was not. Note 2: the inverter contactors
              * are closed in this state, so a pack contactor opened here breaks
              * current under load. */
+            break;
+        case E_PACKS_NOT_IMBALANCED:
+            // Releasing is safe under load; see state_drive.
+            battery.disable_inhibit_contactor_close();
             break;
         case E_IGNITION_ON:
             break;  // Valid event, but we don't need to do anything with it.
@@ -489,10 +501,11 @@ void state_charging(Event event) {
             bms.enable_charge_inhibit("[C03] full battery", R_BATTERY_FULL);
             break;
         case E_PACKS_IMBALANCED:
+            // See state_drive: asserting a hold under load is what Note 2 forbids.
+            break;
         case E_PACKS_NOT_IMBALANCED:
-            /* Deliberately does nothing while charge current is flowing, for the
-             * same reason as the drive state -- see Note 2 at the top of this
-             * file. Re-evaluated when charging terminates. */
+            // Releasing is safe under load; see state_drive for why this matters.
+            battery.disable_inhibit_contactor_close();
             break;
         case E_IGNITION_ON:
             break;  // Valid event, but we don't need to do anything with it.
