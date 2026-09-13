@@ -38,7 +38,7 @@ class Battery {
       uint16_t activePacks_highestCellVoltage = 0; // Highest cell voltage across packs that are not inhibited
       uint32_t minimumBatteryVoltage = 0;      // Lowest permitted voltage of the whole battery
       uint32_t maximumBatteryVoltage = 0;      // Highest permitted voltage of the whole battery
-      uint8_t cellDelta = 0;                   // FIXME todo
+      uint16_t cellDelta = 0;                  // Largest cell delta of any pack, in mV
       float lowestSensorTemperature = 0;       //
       float highestSensorTemperature = 0;      //
       Bms* bms = nullptr;
@@ -83,7 +83,7 @@ class Battery {
       uint32_t voltage_delta_between_packs();
       BatteryPack* get_pack_with_highest_voltage();
       bool packs_are_imbalanced();
-      uint8_t get_cell_delta();
+      uint16_t get_cell_delta();
       bool has_dead_cell();
       bool cell_delta_above_warn() { return get_cell_delta() > CELL_DELTA_WARN_THRESHOLD; }
       bool cell_delta_above_alarm() { return get_cell_delta() > CELL_DELTA_ALARM_THRESHOLD; }

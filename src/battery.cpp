@@ -382,8 +382,8 @@ bool Battery::packs_are_imbalanced() {
 /*
  * Return the largest cell delta of any pack in the battery.
  */
-uint8_t Battery::get_cell_delta() {
-    uint8_t cellDelta = 0;
+uint16_t Battery::get_cell_delta() {
+    uint16_t cellDelta = 0;
     for ( int p = 0; p < numPacks; p++ ) {
         if ( packs[p].get_cell_delta() > cellDelta ) {
             cellDelta = packs[p].get_cell_delta();

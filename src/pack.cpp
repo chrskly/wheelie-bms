@@ -455,7 +455,16 @@ void BatteryPack::decode_voltages(CANMessage *frame) {
 
 // Update the cellDelta
 void BatteryPack::recalculate_cell_delta() {
-    cellDelta = get_highest_cell_voltage() - get_lowest_cell_voltage();
+    const uint16_t highest = get_highest_cell_voltage();
+    const uint16_t lowest = get_lowest_cell_voltage();
+    /* With no populated modules the getters return their sentinels (0 and
+     * 10000), which used to underflow to a huge value and then truncate into a
+     * uint8_t. Report no delta until there is real data on both ends. */
+    if ( highest == 0 || lowest == 10000 || highest < lowest ) {
+        cellDelta = 0;
+        return;
+    }
+    cellDelta = (uint16_t)( highest - lowest );
 }
 
 /*
@@ -639,11 +648,19 @@ int16_t BatteryPack::get_max_charge_current_by_temperature() {
         if ( temperatureDelta < CHARGE_TEMPERATURE_DERATING_THRESHOLD ) {
             return charge_current_for_temperature(get_highest_temperature());
         } else {
-            if ( (temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD) >= 10 ) {
+            const int degreesOverThreshold = temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD;
+            if ( degreesOverThreshold >= 10 ) {
                 return 0;
             } else {
-                float derateScaleFactor = (10 - temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD) / 100;
-                return charge_current_for_temperature(get_highest_temperature()) * derateScaleFactor;
+                /* Scale back 10% per degree over the threshold, per the comment
+                 * above. The old expression was
+                 *   (10 - temperatureDelta - THRESHOLD) / 100
+                 * which is integer division by 100 and so evaluated to 0 for
+                 * every reachable input -- the derated charge current was
+                 * always zero. It also had the wrong shape: the intent is
+                 * 1 - 0.1*excess, not (10 - excess)/100. */
+                const float derateScaleFactor = 1.0f - ( 0.1f * (float)degreesOverThreshold );
+                return (int16_t)( charge_current_for_temperature(get_highest_temperature()) * derateScaleFactor );
             }
         }
     }

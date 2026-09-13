@@ -147,13 +147,13 @@ void send_limits_message_callback(TimerHandle_t xTimer) {
     CANMessage limitsFrame;
     zero_frame(&limitsFrame);
     limitsFrame.id = 0x351;
-    /* FIXME B83: get_max_voltage()/get_min_voltage() return millivolts, but this
-     * field is scaled 0.1 V, so these values are still 1000x too large. The
-     * encoding is now correct; the units are fixed in the scaling pass. */
-    put_u16_le(&limitsFrame, 0, (uint16_t)( battery.get_max_voltage() * 10 ));
+    /* Battery voltages are held in millivolts; these fields are scaled 0.1 V,
+     * so volts*10 == mV/100. Currents are already in whole amps and the fields
+     * are scaled 0.1 A, so those are *10. */
+    put_u16_le(&limitsFrame, 0, (uint16_t)( battery.get_max_voltage() / 100 ));
     put_u16_le(&limitsFrame, 2, (uint16_t)( bms.get_max_charge_current() * 10 ));
     put_u16_le(&limitsFrame, 4, (uint16_t)( bms.get_max_discharge_current() * 10 ));
-    put_u16_le(&limitsFrame, 6, (uint16_t)( battery.get_min_voltage() * 10 ));
+    put_u16_le(&limitsFrame, 6, (uint16_t)( battery.get_min_voltage() / 100 ));
     bms.send_frame(&limitsFrame, false);
 }
 
@@ -360,13 +360,15 @@ void send_status_message_callback(TimerHandle_t xTimer) {
     CANMessage statusFrame;
     zero_frame(&statusFrame);
     statusFrame.id = 0x356;
-    /* Current and temperature are signed. FIXME B84/B85/B86/B87: the scaling of
-     * all four fields is still wrong (battery voltage is mV not V*100, shunt
-     * amps are mA not A*10, temperature is missing its *10). Encoding only. */
-    put_u16_le(&statusFrame, 0, (uint16_t)( battery.get_voltage() * 100 ));
-    put_i16_le(&statusFrame, 2, (int16_t)( shunt.get_amps() * 10 ));
-    put_i16_le(&statusFrame, 4, (int16_t)( battery.get_highest_sensor_temperature() ));
-    put_u16_le(&statusFrame, 6, (uint16_t)( shunt.get_voltage1() * 100 ));
+    /* Scalings, with current and temperature signed:
+     *   voltage       field 0.01 V, battery voltage is mV       -> mV / 10
+     *   current       field 0.1 A,  shunt amps are mA           -> mA / 100
+     *   temperature   field 0.1 C,  sensors report whole C      -> C * 10
+     *   shunt voltage field 0.01 V, shunt voltage1 is mV        -> mV / 10 */
+    put_u16_le(&statusFrame, 0, (uint16_t)( battery.get_voltage() / 10 ));
+    put_i16_le(&statusFrame, 2, (int16_t)( shunt.get_amps() / 100 ));
+    put_i16_le(&statusFrame, 4, (int16_t)( battery.get_highest_sensor_temperature() * 10 ));
+    put_u16_le(&statusFrame, 6, (uint16_t)( shunt.get_voltage1() / 10 ));
     bms.send_frame(&statusFrame, false);
 }
 
@@ -557,22 +559,22 @@ void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
         switch ( m.id ) {
             // ISA shunt amps
             case 0x521:
-                shunt.set_amps( shunt_payload(m) );
+                shunt.set_amps( shunt_payload(m) );  // milliamps
                 shunt.heartbeat();
                 break;
             // ISA shunt voltage 1
             case 0x522:
-                shunt.set_voltage1( shunt_payload(m) / 1000.0f );
+                shunt.set_voltage1( shunt_payload(m) );  // millivolts
                 shunt.heartbeat();
                 break;
             // ISA shunt voltage 2
             case 0x523:
-                shunt.set_voltage2( shunt_payload(m) / 1000.0f );
+                shunt.set_voltage2( shunt_payload(m) );  // millivolts
                 shunt.heartbeat();
                 break;
             // ISA shunt voltage 3
             case 0x524:
-                shunt.set_voltage3( shunt_payload(m) / 1000.0f );
+                shunt.set_voltage3( shunt_payload(m) );  // millivolts
                 shunt.heartbeat();
                 break;
             // ISA shunt temperature
@@ -580,17 +582,17 @@ void handle_main_CAN_messages_callback(TimerHandle_t xTimer) {
                 shunt.set_temperature( shunt_payload(m) / 10 );
                 shunt.heartbeat();
                 break;
-            // ISA shunt kilowatts
+            // ISA shunt power (raw watts; /1000 would be kW)
             case 0x526:
-                shunt.set_watts( shunt_payload(m) / 1000.0f );
+                shunt.set_watts( shunt_payload(m) );  // watts
                 shunt.heartbeat();
                 break;
-            // ISA shunt amp-hours
+            // ISA shunt charge counter, in amp-seconds (raw/3600 would be Ah)
             case 0x527:
                 shunt.set_ampSeconds( shunt_payload(m) );
                 shunt.heartbeat();
                 break;
-            // ISA shunt kilowatt-hours
+            // ISA shunt energy counter, in watt-hours (raw/1000 would be kWh)
             case 0x528:
                 shunt.set_wattHours( shunt_payload(m) );
                 shunt.heartbeat();

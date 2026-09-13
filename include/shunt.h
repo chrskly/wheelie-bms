@@ -22,6 +22,23 @@
 
 #include <stdint.h>
 
+/*
+ * Values as reported by an Isabellenhuette IVT-S ("ISA") shunt.
+ *
+ * UNITS. These are stored in the shunt's own raw units, NOT scaled to SI. They
+ * were verified against an independent driver for the same device (Stm32-vcu
+ * isa_shunt.cpp plus the divisors its VCU applies):
+ *
+ *   amps        milliamps   (raw / 1000 = A)
+ *   voltage1-3  millivolts  (raw / 1000 = V)
+ *   temperature degrees C   (already divided by 10 on receipt)
+ *   watts       watts       (raw / 1000 = kW)
+ *   ampSeconds  amp-seconds (raw / 3600 = Ah)  <- matches BATTERY_CAPACITY_AS
+ *   wattHours   watt-hours  (raw / 1000 = kWh) <- matches BATTERY_CAPACITY_WH
+ *
+ * Scale at the point of use. Dividing on receipt (as voltage1 and watts used
+ * to) truncates to a whole volt / kilowatt and throws away three digits.
+ */
 class Shunt {
     private:
         /* lastHeartbeat starts at 0, so the shunt reads as alive for the first

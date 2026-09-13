@@ -101,8 +101,17 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
                                                     // the contactors. (The old value of 3000 was documented as
                                                     // seconds -- 50 minutes -- which was clearly not intended.)
 
-#define SAFE_VOLTAGE_DELTA_BETWEEN_PACKS 10         // When closing contactors, the voltage difference between the packs
-                                                    // shall not be greater than this voltage, in millivolts.
+/* When closing contactors, the voltage difference between the packs shall not
+ * be greater than this, in MILLIVOLTS.
+ *
+ * HARDWARE CHECK REQUIRED. This was 10 mV, which is a delta two independently
+ * measured ~384,000 mV packs will essentially never achieve -- packs_are_imbalanced()
+ * was therefore permanently true and one pack was permanently inhibited. 1000 mV
+ * (1 V, about 10 mV per cell across 96 cells) is an engineering estimate: with a
+ * plausible 100-200 mOhm paralleled loop resistance that is roughly 5-10 A of
+ * inrush on contactor close. Confirm against your packs' measured internal
+ * resistance and lower it if you can hold a tighter match. */
+#define SAFE_VOLTAGE_DELTA_BETWEEN_PACKS 1000
 
 #define CELL_DELTA_WARN_THRESHOLD 20                // If the cell delta is greater than this value, then raise a warning.
 #define CELL_DELTA_ALARM_THRESHOLD 200              // If the cell delta is greater than this value, then raise an alarm.
@@ -120,8 +129,12 @@ const int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 3 };     // Low-side swit
 #define CHARGE_TEMPERATURE_DERATING_THRESHOLD 1     // Allow temperature to increase this much per minute. Above that, derate.
 
 // Battery capacity/voltages/etc.
-#define BATTERY_CAPACITY_WH 14800                   // 7.4kWh usable per pack, x2 packs == 14.8kWh
-#define BATTERY_CAPACITY_AS 187200                  // 26Ah per pack (93,600 As), x2 packs == 187,200 As
+/* Both of these are in the SAME units the ISA shunt reports, so recalculate_soc()
+ * can compare them directly: watt-hours against shunt wattHours, and amp-seconds
+ * against shunt ampSeconds (the shunt's 0x527 counter is amp-seconds -- raw/3600
+ * is amp-hours). Verified against an independent driver for the same device. */
+#define BATTERY_CAPACITY_WH 14800                   // Wh. 7.4kWh usable per pack, x2 packs == 14.8kWh
+#define BATTERY_CAPACITY_AS 187200                  // As. 26Ah per pack (93,600 As), x2 packs == 187,200 As
 #define CALCULATE_SOC_FROM_AMP_SECONDS 1            // Should we calculate SoC from amp seconds (value = 1) or
                                                     // kWh (value = 0)? 
 #define CELL_EMPTY_VOLTAGE 2900                     // Official min pack voltage = 269V. 269 / 6 / 16 = 2.8020833333V
