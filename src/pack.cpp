@@ -26,8 +26,13 @@
 #include "bms.h"
 #include "settings.h"
 #include "util.h"
+#include "webstatus.h"
 
 BatteryPack::BatteryPack() {}
+
+/* The CAN driver is heap-allocated in init(); own it properly rather than
+ * relying on the object outliving the program. */
+BatteryPack::~BatteryPack() { delete CAN; CAN = nullptr; }
 
 void BatteryPack::init(const BatteryPackConfig& config) {
 
@@ -58,8 +63,11 @@ void BatteryPack::init(const BatteryPackConfig& config) {
         modules[m].init(m, this, numCellsPerModule, numTemperatureSensorsPerModule);
     }
 
-    // Set up dedicated CAN port for communicating with this pack
+    /* Set up dedicated CAN port for communicating with this pack.
+     * Release any previous instance: init() is called once per pack in normal
+     * operation, but leaking on a second call is still a defect. */
     printf("[pack%d] creating CAN port\n", id);
+    delete CAN;
     CAN = new ACAN2515(CANCSPin, SPI, PACK_CAN_NO_INTERRUPT_PIN);
     ACAN2515Settings settings (QUARTZ_FREQUENCY, 500 * 1000);
     settings.mRequestedMode = ACAN2515Settings::NormalMode;
@@ -108,7 +116,44 @@ void BatteryPack::init(const BatteryPackConfig& config) {
     canTxErrorCount = 0;
     canRxErrorCount = 0;
 
+    // See BatteryModule::init: reset every piece of runtime state, not some.
+    nextModuleToPoll = 0;
+    balancePhase = BALANCE_REST;
+    balancePhaseStartedAt = 0;
+    balanceBurstEndedAt = 0;
+    balanceTargetMv = 0;
+    balancingThisSweep = false;
+    haveTemperatureBaseline = false;
+    lastTemperatureSampleTime = 0;
+    lastTemperatureSample = 0;
+    temperatureDelta = 0;
+    voltage = 0;
+    cellDelta = 0;
+
     printf("[pack%d] setup complete\n", id);
+}
+
+void BatteryPack::fill_snapshot(WebPackSnapshot& out) {
+    out.voltage = get_voltage();
+    out.lowestCellVoltage = get_lowest_cell_voltage();
+    out.highestCellVoltage = get_highest_cell_voltage();
+    out.cellDelta = cellDelta;
+    out.lowestTemperature = get_lowest_temperature();
+    out.highestTemperature = get_highest_temperature();
+    out.alive = is_alive();
+    out.contactorsInhibited = contactors_are_inhibited();
+    out.contactorsWelded = contactors_are_welded();
+    out.balancing = balancing_is_active();
+    out.hasDeadCell = has_dead_cell();
+    /* Only meaningful while a burst is running; report 0 the rest of the time
+     * rather than the inert 0x10C7 idle target, which reads on screen as a
+     * bleed target 400 mV above any real cell. */
+    out.balanceTargetMv = balancing_is_active() ? balanceTargetMv : 0;
+    out.canTxErrors = canTxErrorCount;
+    out.canRxErrors = canRxErrorCount;
+    for ( int m = 0; m < MODULES_PER_PACK; m++ ) {
+        modules[m].fill_snapshot(out.modules[m]);
+    }
 }
 
 void BatteryPack::print() {
@@ -286,6 +331,13 @@ void BatteryPack::read_message() {
         // Temperature messages
         if ( (frame.id & 0xFF0) == 0x180 ) {
             decode_temperatures(&frame);
+            /* Two different jobs, and both need doing. The pack samples its own
+             * highest temperature to maintain temperatureDelta, the per-minute
+             * rise rate that get_max_charge_current() derates against; the
+             * battery refreshes the pack-wide too_hot/too_cold latches. Only
+             * the battery half used to be called here, which left
+             * temperatureDelta pinned at 0 and the rate derating dead. */
+            this->process_temperature_update();
             this->battery->process_temperature_update();
         }
         // Voltage messages
@@ -720,6 +772,15 @@ void BatteryPack::decode_temperatures(CANMessage *temperatureMessageFrame) {
             reading = 127;
         }
         modules[moduleId].update_temperature(t, (int8_t)reading);
+    }
+
+    /* A module is only "populated" once it has given us both voltages and at
+     * least one temperature, and the temperature frame is the last of a sweep.
+     * Without re-checking here the flag only flipped when the NEXT sweep's
+     * voltage frames arrived, delaying everything that waits on populated data
+     * -- including the pack's CI_STARTUP contactor hold -- by a full cycle. */
+    if ( !modules[moduleId].all_module_data_populated() ) {
+        modules[moduleId].check_if_module_data_is_populated();
     }
 }
 

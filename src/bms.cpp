@@ -25,6 +25,7 @@
 #include "bms.h"
 #include "shunt.h"
 #include "util.h"
+#include "webstatus.h"
 
 #include "settings.h"
 
@@ -100,6 +101,8 @@ static void reconcile_inhibit_reasons() {
         bms.disable_drive_inhibit("[RC] no dead cell", R_DEAD_CELL);
         bms.disable_charge_inhibit("[RC] no dead cell", R_DEAD_CELL);
     }
+    // Per-pack contactor holds need the same treatment, in every state
+    battery.release_recovered_dead_cell_packs();
     /* R_STARTUP is deliberately not reconciled here; it is withdrawn below once
      * the battery reports. */
 }
@@ -724,6 +727,15 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
     io = _io;
     shunt = _shunt;
     internalErrorFlags = 0;
+    /* init() is a genuine reset, not just a constructor helper: everything the
+     * object accumulates at runtime goes back to its power-on value here. The
+     * counters below used to survive it, which made init() a partial reset and
+     * left stale diagnostics reachable through the web snapshot after a
+     * re-init. */
+    invalidEventCounter = 0;
+    illegalStateTransition = false;
+    canTxErrorCount = 0;
+    canRxErrorCount = 0;
     statusLight = StatusLight();
     /* init() assigns `state` directly rather than going through set_state(), so
      * select the matching blink pattern explicitly -- otherwise both durations
@@ -778,12 +790,22 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
  * that enters the state machine or touches battery state. Work is staggered
  * across the 5 ms tick so no single tick does everything at once.
  */
+/* The tick phase lives outside the task function rather than as a local.
+ * On the target this is equivalent -- the task is created once and its loop
+ * never exits -- but the native test harness stops the worker by unwinding out
+ * of it and re-enters at the top on the next call, which reset a local `tick`
+ * to 0 every time. Everything scheduled off a `tick % N` offset (the health
+ * check at 10, the periodic CAN sends, the web snapshot) then never fired
+ * unless a single call happened to run long enough to reach its offset, so
+ * short simulated intervals silently ran no health checks at all.
+ * Bms::start() resets it, so each simulated boot still begins at phase 0. */
+static uint32_t workerTick = 0;
+
 static void bms_worker_task(void* /*pvParameters*/) {
     extern Bms bms;
     extern Battery battery;
     extern Io io;
 
-    uint32_t tick = 0;
     TickType_t lastWake = xTaskGetTickCount();
 
 #if WATCHDOG_TIMEOUT_S > 0
@@ -798,32 +820,41 @@ static void bms_worker_task(void* /*pvParameters*/) {
         handle_main_CAN_messages_callback();
 
         // Every 10 ms: sample the debounced inputs
-        if ( ( tick % 2 ) == 0 ) {
+        if ( ( workerTick % 2 ) == 0 ) {
             io.poll_inputs();
         }
 
         // Every 100 ms
         /* request_data() sends ONE module poll per call, so it is called often
          * enough to complete a sweep in about 90ms: 6 modules x 3 ticks x 5ms. */
-        if ( ( tick % 3 ) == 0 ) { battery.request_data(); }
-        if ( ( tick % 20 ) == 10 ) { health_check_callback(); }
-        if ( ( tick % 20 ) ==  5 ) { bms.led_blink(); }
+        if ( ( workerTick % 3 ) == 0 ) { battery.request_data(); }
+        if ( ( workerTick % 20 ) == 10 ) { health_check_callback(); }
+        if ( ( workerTick % 20 ) ==  5 ) { bms.led_blink(); }
 
         // Every 1 s, staggered so the tick that builds one frame builds only that one
-        if ( ( tick % 200 ) ==   0 ) { send_limits_message_callback(); }
-        if ( ( tick % 200 ) ==  20 ) { send_bms_state_message_callback(); }
-        if ( ( tick % 200 ) ==  40 ) { send_main_can_error_counters_message_callback(); }
-        if ( ( tick % 200 ) ==  60 ) { send_pack_can_error_counters_message_callback(); }
-        if ( ( tick % 200 ) ==  80 ) { send_soc_message_callback(); }
-        if ( ( tick % 200 ) == 100 ) { send_status_message_callback(); }
-        if ( ( tick % 200 ) == 120 ) { send_alarm_message_callback(); }
-        if ( ( tick % 200 ) == 140 ) { calculations_callback(); }
+        if ( ( workerTick % 200 ) ==   0 ) { send_limits_message_callback(); }
+        if ( ( workerTick % 200 ) ==  20 ) { send_bms_state_message_callback(); }
+        if ( ( workerTick % 200 ) ==  40 ) { send_main_can_error_counters_message_callback(); }
+        if ( ( workerTick % 200 ) ==  60 ) { send_pack_can_error_counters_message_callback(); }
+        if ( ( workerTick % 200 ) ==  80 ) { send_soc_message_callback(); }
+        if ( ( workerTick % 200 ) == 100 ) { send_status_message_callback(); }
+        if ( ( workerTick % 200 ) == 120 ) { send_alarm_message_callback(); }
+        if ( ( workerTick % 200 ) == 140 ) { calculations_callback(); }
 
         // Every 5 s
-        if ( ( tick % 1000 ) == 160 ) { send_module_liveness_message_callback(); }
+        if ( ( workerTick % 1000 ) == 160 ) { send_module_liveness_message_callback(); }
+
+#if WEB_INTERFACE_ENABLED
+        /* Refresh what the web interface serves. Fires on the LAST tick of each
+         * window rather than a fixed offset, so it stays staggered away from
+         * the CAN sends above whatever WEB_SNAPSHOT_INTERVAL_MS is set to. */
+        if ( ( workerTick % WEB_SNAPSHOT_TICKS ) == ( WEB_SNAPSHOT_TICKS - 1 ) ) {
+            bms.publish_web_snapshot();
+        }
+#endif
 
 #if STATUS_PRINT_INTERVAL_MS > 0
-        if ( ( tick % (STATUS_PRINT_INTERVAL_MS / BMS_WORKER_TICK_MS) ) == 180 ) {
+        if ( ( workerTick % (STATUS_PRINT_INTERVAL_MS / BMS_WORKER_TICK_MS) ) == 180 ) {
             bms.print();
         }
 #endif
@@ -832,7 +863,7 @@ static void bms_worker_task(void* /*pvParameters*/) {
 #if WATCHDOG_TIMEOUT_S > 0
         esp_task_wdt_reset();
 #endif
-        tick++;
+        workerTick++;
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(BMS_WORKER_TICK_MS));
     }
 }
@@ -846,6 +877,7 @@ void Bms::start() {
         printf("[bms][start] WARNING could not configure the task watchdog\n");
     }
 #endif
+    workerTick = 0;
     printf("[bms][start] starting BMS worker task\n");
     const BaseType_t created = xTaskCreate(
         bms_worker_task,
@@ -896,6 +928,54 @@ void Bms::send_event(Event event) {
         return;
     }
     state(event);
+}
+
+void Bms::publish_web_snapshot() {
+    /* Static, not a local: WebSnapshot is the best part of a kilobyte and the
+     * worker task's stack is sized for CAN work, not for a second copy of the
+     * whole battery. Only ever touched by the worker task. */
+    static WebSnapshot snapshot;
+
+    snapshot.uptimeMs = get_clock_ms();
+    snapshot.stateName = get_state_name(state);
+    snapshot.timeInStateMs = time_in_state_ms();
+    snapshot.illegalStateTransition = illegalStateTransition;
+    snapshot.invalidEventCount = invalidEventCounter;
+    snapshot.watchdogReboot = watchdogReboot;
+
+    snapshot.driveInhibited = drive_is_inhibited();
+    snapshot.driveInhibitReasons = driveInhibitReasons;
+    snapshot.chargeInhibited = charge_is_inhibited();
+    snapshot.chargeInhibitReasons = chargeInhibitReasons;
+    snapshot.heaterOn = heater_is_enabled();
+    snapshot.ignitionOn = ignition_is_on();
+    snapshot.chargeEnabled = charge_is_enabled();
+
+    snapshot.soc = soc;
+    snapshot.maxChargeCurrent = maxChargeCurrent;
+    snapshot.maxDischargeCurrent = maxDischargeCurrent;
+
+    snapshot.internalErrorFlags = internalErrorFlags;
+    snapshot.errorByte = get_error_byte();
+    snapshot.statusByte = get_status_byte();
+    snapshot.weldingByte = get_welding_byte();
+
+    snapshot.shuntAlive = !shunt->is_dead();
+    snapshot.shuntAmps = shunt->get_amps();
+    snapshot.shuntVoltage1 = shunt->get_voltage1();
+    snapshot.shuntVoltage2 = shunt->get_voltage2();
+    snapshot.shuntVoltage3 = shunt->get_voltage3();
+    snapshot.shuntTemperature = shunt->get_temperature();
+    snapshot.shuntWatts = shunt->get_watts();
+    snapshot.shuntAmpSeconds = shunt->get_ampSeconds();
+    snapshot.shuntWattHours = shunt->get_wattHours();
+
+    snapshot.mainCanTxErrors = canTxErrorCount;
+    snapshot.mainCanRxErrors = canRxErrorCount;
+
+    battery->fill_snapshot(snapshot);
+
+    webstatus_publish(snapshot);
 }
 
 void Bms::print() {
@@ -1094,14 +1174,17 @@ void Bms::increment_invalid_event_count() {
 }
 
 uint8_t Bms::get_welding_byte() {
-    return (
-        0x00 | \
-        posContactorWelded | \
-        negContactorWelded << 1 | \
-        packContactorsWelded[0] << 2 | \
-        packContactorsWelded[1] << 3
-    );
-
+    uint8_t weldingByte = (uint8_t)( ( posContactorWelded ? 0x01 : 0x00 )
+                                   | ( negContactorWelded ? 0x02 : 0x00 ) );
+    /* One bit per pack, from bit 2 up. The pack indices used to be written out
+     * as [0] and [1], which reads one past the end of a NUM_PACKS-sized array
+     * in a single-pack build and put an indeterminate value on the bus. */
+    for ( int p = 0; p < NUM_PACKS && p < 6; p++ ) {
+        if ( packContactorsWelded[p] ) {
+            weldingByte |= (uint8_t)( 1u << ( p + 2 ) );
+        }
+    }
+    return weldingByte;
 }
 
 /*

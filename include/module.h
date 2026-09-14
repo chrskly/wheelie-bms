@@ -24,6 +24,7 @@
 #include "settings.h"
 
 class BatteryPack;
+struct WebModuleSnapshot;
 
 /* Default initialisers on every member: BatteryModule is default-constructed
  * as part of BatteryPack's array long before init() runs on it. */
@@ -64,6 +65,11 @@ class BatteryModule {
        * of a temporary BatteryPack that was destroyed moments later. */
       void init(int _id, BatteryPack* _pack, int _numCells, int _numTemperatureSensors);
       void print();
+      /* Copy everything the web interface shows into `out`. Lives here rather
+       * than behind per-cell getters so the whole module is copied in one pass
+       * by the task that owns it -- see webstatus.h for why the web task is
+       * never allowed to reach in and read these arrays itself. */
+      void fill_snapshot(WebModuleSnapshot& out);
 
       // Voltage
       uint32_t get_voltage();

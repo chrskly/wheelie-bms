@@ -30,6 +30,7 @@
  * declaration is enough; battery.cpp includes bms.h for the definition. */
 class Bms;
 class Io;
+struct WebSnapshot;
 
 class Battery {
    private:
@@ -63,6 +64,9 @@ class Battery {
        *     until every pack exists and `bms` is set. */
       void initialise(Bms* _bms);
       int print();
+      /* Fill in the battery-wide and per-pack halves of a web snapshot. The
+       * BMS-wide fields are Bms::publish_web_snapshot()'s job. */
+      void fill_snapshot(WebSnapshot& out);
 
       void request_data();
       void read_message();
@@ -87,6 +91,10 @@ class Battery {
       bool has_full_cell();
       uint32_t voltage_delta_between_packs();
       bool packs_are_imbalanced();
+      /* Whether the pack-to-pack voltage comparison is a real measurement.
+       * Deliberately independent of contactor state -- see battery.cpp. */
+      bool pack_voltage_is_comparable(int p);
+      bool pack_voltages_are_comparable();
       uint16_t get_cell_delta();
       bool has_dead_cell();
       bool cell_delta_above_warn() { return get_cell_delta() > CELL_DELTA_WARN_THRESHOLD; }
@@ -116,6 +124,10 @@ class Battery {
        * is released again. The old inhibit-only version had no counterpart, so
        * a pack held for a dead cell stayed held for the life of the program. */
       void reevaluate_dead_cell_inhibition();
+      /* Withdraw-only counterpart, safe to call from any state: releasing a
+       * contactor hold only permits the inverter to close it, it never opens
+       * one under load. */
+      void release_recovered_dead_cell_packs();
 
       // startModuleId indexes modules across the WHOLE battery, not within a pack
       uint8_t get_module_liveness_byte(int8_t startModuleId);

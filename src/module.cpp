@@ -28,6 +28,7 @@
 
 #include "module.h"
 #include "pack.h"
+#include "webstatus.h"
 #include "util.h"
 
 
@@ -75,7 +76,37 @@ void BatteryModule::init(int _id, BatteryPack* _pack, int _numCells, int _numTem
     for ( int t = 0; t < TEMPS_PER_MODULE; t++ ) {
         cellTemperature[t] = NO_TEMPERATURE_READING;
     }
+    /* Reset ALL per-module runtime state, not just the populated flag.
+     * Leaving lastHeartbeat and hasReported behind meant a re-initialised
+     * module claimed to be alive on the strength of pre-init history, and a
+     * stale voltageGroupsSeen could declare it populated over stale cell
+     * voltages. init() runs once per module in production, but "runs once" is
+     * an assumption, not a guarantee. */
     allModuleDataPopulated = false;
+    voltageGroupsSeen = 0;
+    hasReported = false;
+    lastHeartbeat = 0;
+    balanceStatus = 0;
+    errorStatus = 0;
+}
+
+void BatteryModule::fill_snapshot(WebModuleSnapshot& out) {
+    /* Slots beyond this module's configured cell/sensor count are filled with
+     * the "no reading" sentinels rather than left as whatever the previous
+     * snapshot put there, so a module fitted with fewer sensors than the array
+     * allows does not display a stale value from another module. */
+    for ( int c = 0; c < CELLS_PER_MODULE; c++ ) {
+        out.cellVoltage[c] = ( c < numCells ) ? cellVoltage[c] : 0;
+    }
+    for ( int t = 0; t < TEMPS_PER_MODULE; t++ ) {
+        out.cellTemperature[t] = ( t < numTemperatureSensors )
+                                 ? cellTemperature[t]
+                                 : (int8_t)NO_TEMPERATURE_READING;
+    }
+    out.balanceStatus = balanceStatus;
+    out.errorStatus = errorStatus;
+    out.alive = is_alive();
+    out.populated = allModuleDataPopulated;
 }
 
 void BatteryModule::print() {

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover so the bottom nav can sit under the home indicator -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#512B81">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>wheelie bms</title>
+<!-- Empty favicon: the BMS is not worth a round trip and a 404 per page load -->
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="topbar">
+    <div id="banner" class="banner grey">
+        <span id="banner-state">CONNECTING</span>
+        <span id="banner-sub">waiting for the BMS</span>
+    </div>
+    <div id="link" class="link">
+        <span id="link-dot" class="dot"></span>
+        <span id="link-text">connecting</span>
+    </div>
+</header>
+
+<main id="content">
+
+    <!-- ============================ STATUS ============================ -->
+    <section id="tab-status" class="tab">
+
+        <div class="card">
+            <div class="soc-head">
+                <h2>State of charge</h2>
+                <span id="soc-energy" class="dim">&ndash;</span>
+            </div>
+            <div class="bar"><div id="soc-fill" class="bar-fill"><span id="soc-text">&ndash;</span></div></div>
+        </div>
+
+        <div class="stats">
+            <div class="stat"><b id="s-voltage">&ndash;</b><span>Pack volts</span></div>
+            <div class="stat"><b id="s-current">&ndash;</b><span>Current</span></div>
+            <div class="stat"><b id="s-power">&ndash;</b><span>Power</span></div>
+            <div class="stat"><b id="s-temp">&ndash;</b><span>Temp min/max</span></div>
+            <div class="stat"><b id="s-cells">&ndash;</b><span>Cell min/max</span></div>
+            <div class="stat"><b id="s-delta">&ndash;</b><span>Cell delta</span></div>
+        </div>
+
+        <div id="alerts" class="alerts hidden"></div>
+
+        <div class="permits">
+            <div class="card permit">
+                <h3 id="drive-head" class="permit-head">Drive</h3>
+                <ul id="drive-reasons" class="reasons"></ul>
+            </div>
+            <div class="card permit">
+                <h3 id="charge-head" class="permit-head">Charge</h3>
+                <ul id="charge-reasons" class="reasons"></ul>
+            </div>
+        </div>
+
+        <div class="card">
+            <table class="kv">
+                <tr><td>Ignition</td><td id="s-ignition">&ndash;</td></tr>
+                <tr><td>Charge enable</td><td id="s-chargeenable">&ndash;</td></tr>
+                <tr><td>Heater</td><td id="s-heater">&ndash;</td></tr>
+                <tr><td>Charge limit</td><td id="s-chargelimit">&ndash;</td></tr>
+                <tr><td>Discharge limit</td><td id="s-dischargelimit">&ndash;</td></tr>
+            </table>
+        </div>
+    </section>
+
+    <!-- ============================ CELLS ============================= -->
+    <section id="tab-cells" class="tab hidden">
+        <div id="pack-picker" class="segmented"></div>
+        <div class="segmented">
+            <button class="seg active" data-view="volts">Voltages</button>
+            <button class="seg" data-view="temps">Temperatures</button>
+        </div>
+
+        <div class="stats stats-3">
+            <div class="stat"><b id="c-min">&ndash;</b><span>Minimum</span></div>
+            <div class="stat"><b id="c-delta">&ndash;</b><span>Delta</span></div>
+            <div class="stat"><b id="c-max">&ndash;</b><span>Maximum</span></div>
+        </div>
+
+        <label class="toggle">
+            <input type="checkbox" id="show-numbers">
+            <span>Show every reading as a number</span>
+        </label>
+
+        <div id="modules"></div>
+    </section>
+
+    <!-- ============================ PACKS ============================= -->
+    <section id="tab-packs" class="tab hidden">
+        <div id="packs"></div>
+    </section>
+
+    <!-- =========================== SYSTEM ============================= -->
+    <section id="tab-system" class="tab hidden">
+        <div class="card">
+            <h2>State machine</h2>
+            <table class="kv">
+                <tr><td>State</td><td id="y-state">&ndash;</td></tr>
+                <tr><td>Time in state</td><td id="y-timeinstate">&ndash;</td></tr>
+                <tr><td>Uptime</td><td id="y-uptime">&ndash;</td></tr>
+                <tr><td>Invalid events</td><td id="y-invalid">&ndash;</td></tr>
+                <tr><td>Illegal transition</td><td id="y-illegal">&ndash;</td></tr>
+                <tr><td>Last boot</td><td id="y-boot">&ndash;</td></tr>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>Faults</h2>
+            <ul id="y-internal" class="reasons"></ul>
+            <table class="kv">
+                <tr><td>Error byte</td><td id="y-errorbyte">&ndash;</td></tr>
+                <tr><td>Status byte</td><td id="y-statusbyte">&ndash;</td></tr>
+                <tr><td>Welding byte</td><td id="y-weldingbyte">&ndash;</td></tr>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>ISA shunt</h2>
+            <table class="kv">
+                <tr><td>Responding</td><td id="y-shuntalive">&ndash;</td></tr>
+                <tr><td>Current</td><td id="y-shuntamps">&ndash;</td></tr>
+                <tr><td>Voltage 1</td><td id="y-shuntv1">&ndash;</td></tr>
+                <tr><td>Voltage 2</td><td id="y-shuntv2">&ndash;</td></tr>
+                <tr><td>Voltage 3</td><td id="y-shuntv3">&ndash;</td></tr>
+                <tr><td>Power</td><td id="y-shuntw">&ndash;</td></tr>
+                <tr><td>Charge counter</td><td id="y-shuntas">&ndash;</td></tr>
+                <tr><td>Energy counter</td><td id="y-shuntwh">&ndash;</td></tr>
+                <tr><td>Temperature</td><td id="y-shunttemp">&ndash;</td></tr>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>CAN errors</h2>
+            <table class="kv" id="y-can"></table>
+        </div>
+
+        <div class="card">
+            <h2>Build limits</h2>
+            <table class="kv" id="y-cfg"></table>
+        </div>
+    </section>
+
+</main>
+
+<nav id="nav">
+    <button class="nav-button active" data-tab="status"><b>Status</b></button>
+    <button class="nav-button" data-tab="cells"><b>Cells</b></button>
+    <button class="nav-button" data-tab="packs"><b>Packs</b></button>
+    <button class="nav-button" data-tab="system"><b>System</b></button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>

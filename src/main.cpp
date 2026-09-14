@@ -36,6 +36,7 @@ EV Mustang BMS
 #include "shunt.h"
 #include "settings.h"
 #include "util.h"
+#include "webserver.h"
 
 
 Io io;
@@ -118,10 +119,17 @@ void setup() {
      * assign a freshly-built temporary over them, because Bms, BatteryPack and
      * BatteryModule all hand out pointers to `this`. */
     io.init();
+    shunt.init();
     battery.initialise(&bms);
     bms.init(&battery, &io, &shunt);
 
     bms.start();
+
+    /* Last, and deliberately so. The web interface is a passive observer of a
+     * snapshot the worker publishes, so it has nothing to show until the worker
+     * is running, and bringing up the WiFi stack first would put a second or
+     * two of radio init in front of the battery management starting. */
+    webserver_start();
 
     printf("---- BMS READY ----\n");
 }

@@ -130,11 +130,14 @@ class Bms {
         void disable_drive_inhibit(const char* context, InhibitReason reason);
         bool drive_is_inhibited();
         int8_t get_drive_inhibit_reason();
+        // Every reason currently holding the inhibit, not just the most severe.
+        uint16_t get_drive_inhibit_reasons() { return driveInhibitReasons; }
 
         void enable_charge_inhibit(const char* context, InhibitReason reason);
         void disable_charge_inhibit(const char* context, InhibitReason reason);
         bool charge_is_inhibited();
         int8_t get_charge_inhibit_reason();
+        uint16_t get_charge_inhibit_reasons() { return chargeInhibitReasons; }
 
         // HEATER
         void enable_heater();
@@ -162,6 +165,7 @@ class Bms {
         void clear_internal_error(InternalErrorSource source);
         bool get_internal_error() { return internalErrorFlags != 0; };
         bool has_internal_error(InternalErrorSource source) { return ( internalErrorFlags & (uint8_t)source ) != 0; }
+        uint8_t get_internal_error_flags() { return internalErrorFlags; }
 
         uint8_t get_error_byte();
         uint8_t get_status_byte();
@@ -189,6 +193,14 @@ class Bms {
 
         void pack_voltages_match_heartbeat();
         bool packs_are_imbalanced();
+
+        /* Web interface.
+         *
+         * Assemble a consistent copy of everything the browser shows and hand
+         * it to the snapshot store. Called from the BMS worker task only; the
+         * web server task never touches a Bms, Battery, Shunt or Io. See
+         * webstatus.h. */
+        void publish_web_snapshot();
 
         // CAN
         bool send_frame(CANMessage* frame, bool doChecksum);

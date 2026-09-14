@@ -1,0 +1,446 @@
+/*
+ * wheelie-bms web interface.
+ *
+ * Phone first. The layout is a fixed header, a scrolling body and a fixed
+ * bottom tab bar, because on a phone the bottom of the screen is where the
+ * thumb is. Nothing here is wider than a single column until 560px, where
+ * there is room to put cards side by side.
+ *
+ * The palette is the one from the electric-mustang-dashboard so the two read as
+ * the same instrument. The type scale is not: that dashboard renders on a large
+ * screen bolted to a dash and uses 5em headings, which on a phone would fit
+ * about four characters per line.
+ */
+
+:root {
+    --bg: #512B81;
+    --card: #232D3F;
+    --card-2: #2d3950;
+    --nav: #1b2331;
+    --nav-active: #434D5F;
+
+    --green: #138B54;
+    --green-bright: #03C988;
+    --red: #CB0000;
+    --amber: #E9A23B;
+    --blue: #166fb7;
+
+    --text: #FFF;
+    --dim: #9aa3b2;
+    --track: #4a4160;
+
+    --radius: 12px;
+    --gap: 12px;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --nav-height: 58px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* Room for the fixed header and the fixed nav, so nothing hides behind them */
+    padding: 0 var(--gap);
+    padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + var(--gap));
+    -webkit-tap-highlight-color: transparent;
+}
+
+.hidden { display: none !important; }
+.dim { color: var(--dim); }
+
+/* ------------------------------- header ------------------------------- */
+
+#topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    /* Bleed over the body's side padding so the banner spans the full width */
+    margin: 0 calc(var(--gap) * -1);
+    padding: calc(env(safe-area-inset-top, 0px) + 10px) var(--gap) 10px;
+    background: var(--bg);
+}
+
+.banner {
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    text-align: center;
+    transition: background-color .25s;
+}
+
+.banner #banner-state {
+    display: block;
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    line-height: 1.1;
+}
+
+.banner #banner-sub {
+    display: block;
+    margin-top: 2px;
+    font-size: 13px;
+    opacity: .85;
+}
+
+.grey   { background: var(--card); }
+.green  { background: var(--green); }
+.red    { background: var(--red); }
+.blue   { background: var(--blue); }
+.amber  { background: var(--amber); color: #251a05; }
+
+.link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding-top: 8px;
+    font-size: 12px;
+    color: var(--dim);
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+}
+.dot.ok   { background: var(--green-bright); }
+.dot.bad  { background: var(--red); }
+
+/* -------------------------------- cards ------------------------------- */
+
+.card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: var(--gap);
+}
+
+.card h2 {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 10px;
+}
+
+.card h3 { font-size: 16px; }
+
+/* ------------------------------ soc bar ------------------------------- */
+
+.soc-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+}
+.soc-head h2 { margin-bottom: 8px; }
+
+.bar {
+    height: 34px;
+    border-radius: 8px;
+    background: var(--track);
+    overflow: hidden;
+}
+
+.bar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--green);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 8px;
+    font-weight: 700;
+    font-size: 15px;
+    /* A percentage change should read as the battery moving, not as the number
+     * jumping, but slow enough transitions make a 500ms poll look laggy. */
+    transition: width .4s ease, background-color .4s;
+    white-space: nowrap;
+    min-width: 3.2em;
+}
+.bar-fill.low { background: var(--red); }
+.bar-fill.mid { background: var(--amber); color: #251a05; }
+
+/* ------------------------------- stats -------------------------------- */
+
+.stats {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--gap);
+    margin-bottom: var(--gap);
+}
+.stats-3 { grid-template-columns: repeat(3, 1fr); }
+
+.stat {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 12px 10px;
+    text-align: center;
+    min-width: 0;
+}
+.stat b {
+    display: block;
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.15;
+    /* Long values (e.g. "3711/3729") must shrink rather than overflow */
+    overflow-wrap: anywhere;
+}
+.stats-3 .stat b { font-size: 18px; }
+.stat span {
+    display: block;
+    margin-top: 3px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    color: var(--dim);
+}
+.stat.warn b { color: var(--amber); }
+.stat.bad  b { color: #ff6b6b; }
+
+/* ------------------------------ alerts -------------------------------- */
+
+.alerts { margin-bottom: var(--gap); }
+
+.alert {
+    background: var(--red);
+    border-radius: var(--radius);
+    padding: 11px 14px;
+    margin-bottom: 8px;
+    font-weight: 600;
+    font-size: 14px;
+}
+.alert.warn { background: var(--amber); color: #251a05; }
+
+/* --------------------------- drive / charge --------------------------- */
+
+.permits {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--gap);
+}
+.permits .card { margin-bottom: var(--gap); }
+.permit { padding: 0; overflow: hidden; }
+
+.permit-head {
+    padding: 12px 10px;
+    text-align: center;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    background: var(--green);
+}
+.permit-head.blocked { background: var(--red); }
+
+.reasons {
+    list-style: none;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+.reasons:empty { display: none; }
+.reasons li {
+    padding: 3px 0;
+    color: var(--dim);
+}
+.reasons li::before { content: "\2022  "; }
+
+/* --------------------------- key / value ------------------------------ */
+
+table.kv {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+table.kv td {
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+}
+table.kv tr:last-child td { border-bottom: 0; }
+/* Fixed label column. Without it a long decoded value (the status byte's list
+ * of set bits, say) steals the whole row and folds a two-word label onto two
+ * lines, which then drags every other row's baseline about. */
+table.kv td:first-child { color: var(--dim); width: 42%; }
+table.kv td:last-child {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+.ok-text  { color: var(--green-bright); }
+.bad-text { color: #ff6b6b; }
+.warn-text{ color: var(--amber); }
+
+/* --------------------------- segmented control ------------------------ */
+
+.segmented {
+    display: flex;
+    gap: 4px;
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 4px;
+    margin-bottom: var(--gap);
+}
+.segmented:empty { display: none; }
+
+.seg {
+    flex: 1;
+    /* 40px+ keeps every control a comfortable thumb target */
+    min-height: 40px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+.seg.active {
+    background: var(--nav-active);
+    color: var(--text);
+}
+
+.toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 4px var(--gap);
+    font-size: 13px;
+    color: var(--dim);
+}
+.toggle input { width: 18px; height: 18px; accent-color: var(--green-bright); }
+
+/* ------------------------------ modules ------------------------------- */
+
+.module { margin-bottom: var(--gap); }
+
+.module-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+.module-head b { font-size: 14px; }
+.module-head span { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+/* Bars. One flex row of equal-width columns, so 16 cells fit any phone
+ * without a horizontal scrollbar. */
+.bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 74px;
+    background: var(--card-2);
+    border-radius: 8px;
+    padding: 6px;
+}
+.bars .cell {
+    flex: 1 1 0;
+    min-width: 0;
+    background: var(--green-bright);
+    border-radius: 2px;
+    /* Always visible even at the pack minimum, so a missing bar means
+     * "no reading" rather than "lowest cell" */
+    min-height: 3px;
+    transition: height .3s;
+}
+.bars .cell.warn { background: var(--amber); }
+.bars .cell.bad  { background: #ff6b6b; }
+.bars .cell.dead { background: var(--red); }
+.bars .cell.none { background: var(--track); }
+
+/* Numeric view */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+}
+.grid.temps { grid-template-columns: repeat(4, 1fr); }
+
+.chip {
+    background: var(--card-2);
+    border-radius: 6px;
+    padding: 7px 2px;
+    text-align: center;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    border-bottom: 3px solid var(--green-bright);
+}
+.chip.warn { border-bottom-color: var(--amber); }
+.chip.bad  { border-bottom-color: #ff6b6b; }
+.chip.dead { border-bottom-color: var(--red); }
+.chip.none { border-bottom-color: var(--track); color: var(--dim); }
+.chip i { display: block; font-size: 10px; font-style: normal; color: var(--dim); }
+
+.stale { opacity: .45; }
+
+/* ------------------------------- packs -------------------------------- */
+
+.liveness { display: flex; gap: 6px; flex-wrap: wrap; }
+.live-dot {
+    flex: 1 1 0;
+    min-width: 34px;
+    text-align: center;
+    padding: 7px 0;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    background: var(--track);
+    color: var(--dim);
+}
+.live-dot.ok   { background: var(--green); color: var(--text); }
+.live-dot.warn { background: var(--amber); color: #251a05; }
+.live-dot.bad  { background: var(--red); color: var(--text); }
+
+/* ----------------------------- bottom nav ----------------------------- */
+
+#nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    display: flex;
+    background: var(--nav);
+    padding-bottom: var(--safe-bottom);
+    box-shadow: 0 -2px 12px rgba(0,0,0,.35);
+}
+
+.nav-button {
+    flex: 1;
+    min-height: var(--nav-height);
+    border: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    border-top: 3px solid transparent;
+}
+.nav-button.active {
+    color: var(--text);
+    border-top-color: var(--green-bright);
+    background: var(--nav-active);
+}
+
+/* Some people get motion sick from sliding bars, and a phone set to reduce
+ * motion should be taken at its word. Everything here degrades to an instant
+ * update; nothing depends on the animation to be readable. */
+@media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+}
+
+/* --------------------------- wider screens ---------------------------- */
+
+@media (min-width: 560px) {
+    body { max-width: 720px; margin: 0 auto; }
+    .stats { grid-template-columns: repeat(3, 1fr); }
+    .banner #banner-state { font-size: 38px; }
+    .grid { grid-template-columns: repeat(8, 1fr); }
+}

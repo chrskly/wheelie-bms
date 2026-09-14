@@ -54,6 +54,7 @@ class Shunt {
         int32_t wattHours = 0;
     public:
         Shunt();
+        void init();
         void heartbeat();
         bool is_dead();
         int32_t get_amps();

@@ -28,6 +28,7 @@
 
 class Battery;
 class Bms;
+struct WebPackSnapshot;
 
 const uint8_t finalxor[12] = { 0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69, 0x02, 0x38, 0x76, 0x4C };
 
@@ -64,6 +65,7 @@ class BatteryPack {
       int id = -1;
 
       BatteryPack();
+      ~BatteryPack();
       /* Initialise in place. Do NOT construct a temporary and copy-assign it:
        * each BatteryModule stores a back-pointer to its parent pack, so building
        * a temporary BatteryPack leaves every module pointing at freed stack. */
@@ -72,6 +74,8 @@ class BatteryPack {
       void set_battery(Battery* parent) { this->battery = parent; }
 
       void print();
+      // See BatteryModule::fill_snapshot.
+      void fill_snapshot(WebPackSnapshot& out);
       uint8_t getcheck(CANMessage &msg, int moduleId);  // moduleId, NOT pack id
       int8_t get_module_liveness(int8_t moduleId);
       bool is_alive();

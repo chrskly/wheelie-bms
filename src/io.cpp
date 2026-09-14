@@ -39,6 +39,10 @@ void Io::init() {
     chargeEnable = ( digitalRead(CHARGE_ENABLE_PIN) == HIGH );
     ignitionSettleCount = 0;
     chargeEnableSettleCount = 0;
+    /* Re-arm the one-shot boot dispatch. init() runs once in production, but
+     * leaving this latched means any re-initialisation silently skips
+     * reporting the initial input levels. */
+    initialStateDispatched = false;
 
     // POS_CONTACTOR_FEEDBACK input
     pinMode(POS_CONTACTOR_FEEDBACK_PIN, INPUT);

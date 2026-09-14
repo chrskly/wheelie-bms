@@ -25,6 +25,7 @@
 #include "io.h"
 #include "settings.h"
 #include "util.h"
+#include "webstatus.h"
 
 
 
@@ -62,6 +63,26 @@ void Battery::initialise(Bms* _bms) {
     maximumBatteryVoltage = CELL_FULL_VOLTAGE * CELLS_PER_MODULE * MODULES_PER_PACK;
     minimumBatteryVoltage = CELL_EMPTY_VOLTAGE * CELLS_PER_MODULE * MODULES_PER_PACK;
 
+}
+
+void Battery::fill_snapshot(WebSnapshot& out) {
+    out.voltage = get_voltage();
+    out.lowestCellVoltage = get_lowest_cell_voltage();
+    out.highestCellVoltage = get_highest_cell_voltage();
+    out.cellDelta = get_cell_delta();
+    out.lowestTemperature = get_lowest_sensor_temperature();
+    out.highestTemperature = get_highest_sensor_temperature();
+    out.batteryAlive = is_alive();
+    out.tooHot = too_hot();
+    out.tooColdToCharge = too_cold_to_charge();
+    out.hasEmptyCell = has_empty_cell();
+    out.hasFullCell = has_full_cell();
+    out.hasDeadCell = has_dead_cell();
+    out.packsImbalanced = packs_are_imbalanced();
+    out.activePacks = number_of_active_packs();
+    for ( int p = 0; p < numPacks; p++ ) {
+        packs[p].fill_snapshot(out.packs[p]);
+    }
 }
 
 int Battery::print() {
@@ -215,7 +236,11 @@ void Battery::process_voltage_update() {
     recalculate_voltage();
     recalculate_lowest_cell_voltage();
     recalculate_highest_cell_voltage();
-    if ( !packs_are_imbalanced() && bms != nullptr ) {
+    /* Refresh the "voltages matched" timestamp only on a measurement we can
+     * actually trust. "Cannot measure" is not "matched": treating it as one is
+     * what let the imbalance hold withdraw itself, and it would also let a
+     * balance burst mask a real imbalance for as long as the burst lasted. */
+    if ( bms != nullptr && pack_voltages_are_comparable() && !packs_are_imbalanced() ) {
         this->bms->pack_voltages_match_heartbeat();
     }
 }
@@ -312,21 +337,56 @@ bool Battery::has_full_cell() {
 /*
  * Return the largest voltage difference between any two packs in this battery.
  */
+/*
+ * Can this pack's voltage be meaningfully compared with another pack's right
+ * now?
+ *
+ * Contactor state deliberately plays no part. A pack held open because of an
+ * imbalance still reports its voltage perfectly well, and that reading is
+ * exactly what decides when it is safe to reconnect it. Excluding inhibited
+ * packs made the imbalance protection erase its own evidence: asserting the
+ * hold dropped the comparable-pack count below two, the delta collapsed to 0,
+ * that read as "the packs match", and the hold was withdrawn again about three
+ * seconds later. Measured over 20 s with the packs a genuine 7.68 V apart, the
+ * contactors ended up permitted to close 97% of the time.
+ */
+bool Battery::pack_voltage_is_comparable(int p) {
+    if ( packs[p].has_dead_cell() ) {
+        return false;                    // already inhibited on its own account
+    }
+    if ( !packs[p].is_alive() || !packs[p].all_modules_populated() ) {
+        return false;                    // no complete set of readings yet
+    }
+    if ( packs[p].voltage_readings_are_suspect() ) {
+        return false;                    // mid balance burst, or still settling
+    }
+    return packs[p].get_voltage() > 0;
+}
+
+/*
+ * True when at least two packs can be compared, i.e. when the delta below is a
+ * real measurement rather than the 0 that means "cannot tell".
+ */
+bool Battery::pack_voltages_are_comparable() {
+    int comparable = 0;
+    for ( int p = 0; p < numPacks; p++ ) {
+        if ( pack_voltage_is_comparable(p) ) {
+            comparable++;
+        }
+    }
+    return comparable >= 2;
+}
+
 uint32_t Battery::voltage_delta_between_packs() {
     // Can't be any delta if there's only one pack
     if ( !has_multiple_packs() ) {
-        return 0;
-    }
-    // Only one active pack
-    if ( number_of_active_packs() < 2 ){
         return 0;
     }
     uint32_t highestPackVoltage = 0;
     uint32_t lowestPackVoltage = UINT32_MAX;
     int eligiblePacks = 0;
     for ( int p = 0; p < numPacks; p++ ) {
-        // Exclude packs with dead cells, they should be inhibited
-        if ( packs[p].has_dead_cell() ) {
+        if ( !pack_voltage_is_comparable(p) ) {
             continue;
         }
         eligiblePacks++;
@@ -673,6 +733,18 @@ void Battery::reevaluate_contactor_inhibition_for_charge() {
 /*
  * Apply or withdraw the dead-cell contactor hold, per pack.
  */
+/* E_DEAD_CELL only fires while a cell IS dead, so nothing drove the recovery
+ * direction: a pack isolated for a dead cell stayed isolated for the life of
+ * the program even after the cell came back. Called from the reconciliation
+ * pass, which runs in every state. */
+void Battery::release_recovered_dead_cell_packs() {
+    for ( int p = 0; p < numPacks; p++ ) {
+        if ( !packs[p].has_dead_cell() ) {
+            packs[p].disable_inhibit_contactor_close(CI_DEAD_CELL);
+        }
+    }
+}
+
 void Battery::reevaluate_dead_cell_inhibition() {
     for ( int p = 0; p < numPacks; p++ ) {
         if ( packs[p].has_dead_cell() ) {

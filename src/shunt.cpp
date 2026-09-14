@@ -22,7 +22,13 @@
 #include "util.h"
 #include "settings.h"
 
-Shunt::Shunt() {
+Shunt::Shunt() { init(); }
+
+/* Separate from the constructor so the shunt can be returned to a known state
+ * without being reconstructed -- including lastHeartbeat, which the constructor
+ * left to its default and nothing else ever cleared. */
+void Shunt::init() {
+    lastHeartbeat = 0;
     amps = 0;
     voltage1 = 0;
     voltage2 = 0;

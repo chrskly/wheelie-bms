@@ -75,8 +75,16 @@ static const uint32_t QUARTZ_FREQUENCY = 8UL * 1000UL * 1000UL;  // 8 MHz
  * SDK config, were referenced nowhere, and named pins used for other things. */
 #define CONSOLE_BAUD_RATE 115200
 
-// Number of paralleled packs. The pin arrays below are sized by it.
+/* Number of paralleled packs. The pin arrays below are sized by it.
+ *
+ * Overridable from the build. The firmware has explicit, safety-relevant
+ * single-pack handling -- most importantly the dead-cell response, which has
+ * nothing to isolate and so must inhibit outright instead -- and that code
+ * could not previously be compiled at all, let alone exercised. The native test
+ * suite builds a second binary with -DNUM_PACKS_CFG=1 to cover it. */
+#ifndef NUM_PACKS_CFG
 #define NUM_PACKS_CFG 2
+#endif
 
 /* Main CAN bus. This is the ESP32's own TWAI controller, not an MCP2515, so
  * there is no chip select -- the old MAIN_CAN_CS was dead and collided with
@@ -88,7 +96,11 @@ static const uint32_t QUARTZ_FREQUENCY = 8UL * 1000UL * 1000UL;  // 8 MHz
 #define SPI_CLK  18
 #define SPI_MISO 16
 #define SPI_MOSI 17
+#if NUM_PACKS_CFG == 2
 constexpr int CS_PINS[NUM_PACKS_CFG] = { 15, 8 };   // Chip select, one per pack
+#else
+constexpr int CS_PINS[NUM_PACKS_CFG] = { 15 };
+#endif
 
 /* The pack MCP2515 controllers are driven in POLLED mode (ACAN2515 treats INT
  * pin 255 as "no interrupt"). Previously both packs were constructed with INT
@@ -102,12 +114,20 @@ constexpr int CS_PINS[NUM_PACKS_CFG] = { 15, 8 };   // Chip select, one per pack
 #define CHARGE_ENABLE_PIN           9               // Charge enabled input signal
 #define POS_CONTACTOR_FEEDBACK_PIN 11               // Feedback from the HVJB positive contactor for welding detection
 #define NEG_CONTACTOR_FEEDBACK_PIN 12               // Feedback from the HVJB negative contactor for welding detection
+#if NUM_PACKS_CFG == 2
 constexpr int CONTACTOR_FEEDBACK_PINS[NUM_PACKS_CFG] = { 13, 14 };  // Battery box contactor feedback
+#else
+constexpr int CONTACTOR_FEEDBACK_PINS[NUM_PACKS_CFG] = { 13 };
+#endif
 
 // Outputs
 #define CHARGE_INHIBIT_PIN 4                        // Low-side switch to create CHARGE_INHIBIT signal. a.k.a OUT1
 #define HEATER_ENABLE_PIN 5                         // Low-side switch to turn on battery heaters. a.k.a. OUT2
+#if NUM_PACKS_CFG == 2
 constexpr int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2, 42 };    // Disallow closing of battery box contactors
+#else
+constexpr int INHIBIT_CONTACTOR_PINS[NUM_PACKS_CFG] = { 2 };
+#endif
 #define DRIVE_INHIBIT_PIN 6                         // Low-side switch to disallow driving. a.k.a OUT3
 
 //------------------------------------------------------------------------------
@@ -130,13 +150,18 @@ constexpr bool pin_is_safe_to_use(int pin) {
 constexpr int CONFIGURED_PINS[] = {
     LED_PIN, CAN_CLK_PIN,
     MAIN_CAN_TX_PIN, MAIN_CAN_RX_PIN,
-    SPI_CLK, SPI_MISO, SPI_MOSI, CS_PINS[0], CS_PINS[1],
+    SPI_CLK, SPI_MISO, SPI_MOSI, CS_PINS[0],
     IGNITION_ENABLE_PIN, CHARGE_ENABLE_PIN,
     POS_CONTACTOR_FEEDBACK_PIN, NEG_CONTACTOR_FEEDBACK_PIN,
-    CONTACTOR_FEEDBACK_PINS[0], CONTACTOR_FEEDBACK_PINS[1],
+    CONTACTOR_FEEDBACK_PINS[0],
     CHARGE_INHIBIT_PIN, HEATER_ENABLE_PIN,
-    INHIBIT_CONTACTOR_PINS[0], INHIBIT_CONTACTOR_PINS[1],
+    INHIBIT_CONTACTOR_PINS[0],
     DRIVE_INHIBIT_PIN,
+#if NUM_PACKS_CFG == 2
+    /* Second pack. Listed explicitly so the uniqueness and safety checks below
+     * cover every per-pack pin, not just pack 0's. */
+    CS_PINS[1], CONTACTOR_FEEDBACK_PINS[1], INHIBIT_CONTACTOR_PINS[1],
+#endif
 };
 constexpr int CONFIGURED_PIN_COUNT = (int)( sizeof(CONFIGURED_PINS) / sizeof(CONFIGURED_PINS[0]) );
 
@@ -156,7 +181,7 @@ constexpr bool every_pin_is_unique(int i = 0) {
         || ( pin_is_unique(i) && every_pin_is_unique(i + 1) );
 }
 
-static_assert(NUM_PACKS_CFG == 2,
+static_assert(NUM_PACKS_CFG == 1 || NUM_PACKS_CFG == 2,
     "CONFIGURED_PINS lists the per-pack pins explicitly; extend it if NUM_PACKS_CFG changes");
 static_assert(every_pin_is_safe(),
     "A configured pin does not exist on the ESP32-S3, or is reserved for flash, PSRAM, "
@@ -321,6 +346,64 @@ static_assert(every_pin_is_unique(),
 #define BMS_WORKER_TICK_MS 5
 #define BMS_WORKER_STACK_BYTES 8192
 #define BMS_WORKER_PRIORITY 3
+
+/*==============================================================================
+ * Web interface
+ *
+ * A small read-only HTTP server, aimed at a phone held next to the car. It
+ * serves three static files from LittleFS (upload them with
+ * `pio run -t uploadfs`) plus /api/status, which the page polls for JSON.
+ *
+ * READ ONLY, deliberately. There are no endpoints that change anything: no
+ * contactor control, no threshold editing, no firmware upload. A BMS is a
+ * safety device and its only write interface should be the one on the bench.
+ *
+ * The server runs BELOW the BMS worker in priority and never touches a Battery,
+ * Bms, Shunt or Io -- it reads a snapshot the worker publishes. See webstatus.h.
+ *============================================================================*/
+#define WEB_INTERFACE_ENABLED 1
+
+#define WEB_SERVER_PORT 80
+
+/* Advertised over mDNS as http://<name>.local, so the phone does not have to be
+ * told an IP address. Set to "" to skip advertising. */
+#define WEB_MDNS_HOSTNAME "wheelie-bms"
+
+/* 0 = run our own access point and let the phone join it (works anywhere,
+ * including a car park with no WiFi). 1 = join an existing network instead. */
+#define WEB_WIFI_STATION_MODE 0
+
+/* Access point credentials, used when WEB_WIFI_STATION_MODE is 0.
+ * The password must be at least 8 characters -- softAP() rejects anything
+ * shorter and the AP then never appears, with nothing on the console to say
+ * why. Set it to "" for a deliberately open network. */
+#define WEB_WIFI_AP_SSID     "wheelie-bms"
+#define WEB_WIFI_AP_PASSWORD "wheeliebms"
+
+// Existing network to join, used when WEB_WIFI_STATION_MODE is 1.
+#define WEB_WIFI_STA_SSID     ""
+#define WEB_WIFI_STA_PASSWORD ""
+#define WEB_WIFI_STA_TIMEOUT_MS 15000               // Give up joining after this long and carry on without WiFi
+
+/* How often the worker republishes the snapshot the browser reads. Must be a
+ * multiple of BMS_WORKER_TICK_MS. The page polls at its own rate; anything
+ * faster than this just re-reads the same numbers. */
+#define WEB_SNAPSHOT_INTERVAL_MS 500
+#define WEB_SNAPSHOT_TICKS ( WEB_SNAPSHOT_INTERVAL_MS / BMS_WORKER_TICK_MS )
+static_assert(WEB_SNAPSHOT_TICKS * BMS_WORKER_TICK_MS == WEB_SNAPSHOT_INTERVAL_MS,
+    "WEB_SNAPSHOT_INTERVAL_MS must be a whole number of BMS_WORKER_TICK_MS ticks");
+static_assert(WEB_SNAPSHOT_TICKS >= 1,
+    "WEB_SNAPSHOT_INTERVAL_MS must be at least one worker tick");
+
+/* Priority 1 sits below BMS_WORKER_PRIORITY, so serving a page can never delay
+ * a CAN poll or a contactor decision, and below the ACAN2515 driver task. It is
+ * above the idle task, which is why the accept loop must yield -- see the
+ * comment on the delay in webserver.cpp. */
+#define WEB_TASK_STACK_BYTES 8192
+#define WEB_TASK_PRIORITY 1
+#define WEB_ACCEPT_POLL_MS 10                       // How long to sleep between checks for a new client
+#define WEB_CLIENT_TIMEOUT_MS 3000                  // Drop a client that stops sending mid-request
+#define WEB_JSON_BUFFER_BYTES 6144                  // /api/status is ~3 KB with two 6-module packs
 
 /* Consecutive agreeing samples required before an input change is accepted.
  * Inputs are polled every IO_POLL_INTERVAL_MS, so this is the debounce time. */
