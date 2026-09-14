@@ -1,1 +1,18 @@
 .pio
+
+# Native test suite build output -- everything test/native/run.sh generates.
+# The suite is compiled fresh on every run, so none of this is worth carrying.
+test/native/testrun
+test/native/testrun-single
+test/native/testrun-cov
+test/native/testrun-cov-single
+test/native/cov/
+test/native/cov1/
+test/native/gcov1/
+test/native/gcov2/
+
+# Coverage and object files, wherever they land
+*.gcno
+*.gcda
+*.gcov
+*.o
