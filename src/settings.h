@@ -22,7 +22,18 @@
 
 #include <stdint.h>   // QUARTZ_FREQUENCY is a uint32_t
 
-#define VERSION 1.0
+/* Firmware version. This was `#define VERSION 1.0` -- a floating-point literal,
+ * referenced nowhere, so the firmware could not tell you what it was running
+ * over CAN, over the web page, or on the console. Split into integers so it can
+ * be encoded, and into a string so it can be printed. */
+#define VERSION_MAJOR 1
+#define VERSION_MINOR 0
+#define VERSION_STRING "1.0"
+/* Byte 2-3 of 0x35F, per the CAN-bus BMS convention: major in the high byte. */
+#define VERSION_U16 ( ( VERSION_MAJOR << 8 ) | VERSION_MINOR )
+/* Byte 0-1 of 0x35F. Arbitrary but stable, so a receiver can tell one BMS
+ * design from another on a shared bus. */
+#define BATTERY_MODEL_ID 0x0001
 
 /*==============================================================================
  * PIN MAP  --  ESP32-S3
@@ -204,6 +215,13 @@ static_assert(every_pin_is_unique(),
 #define MODULE_TTL_MS 5000                          // If we have not seen an update from a module in MODULE_TTL_MS
                                                     // milliseconds, then mark the module as dead.
 
+/* Below this the shunt reading is too small to say anything about direction,
+ * so the plausibility check below stays quiet. */
+#define SHUNT_SIGNIFICANT_CURRENT_MA 2000
+/* How long a contradiction must persist before it is reported. Long enough to
+ * ride out the moment a charger starts or stops. */
+#define SHUNT_IMPLAUSIBLE_MS 10000
+
 #define SHUNT_TTL_MS 3000                           // If we have not seen an update from the ISA shunt in
                                                     // SHUNT_TTL_MS milliseconds, then mark it as dead.
 
@@ -231,6 +249,11 @@ static_assert(every_pin_is_unique(),
  * module reports a raw count of 0 for an unpopulated slot, which decodes to
  * -40 C and would otherwise look like a real, very cold reading. */
 #define NO_TEMPERATURE_READING (-127)
+/* Coldest value a module sensor can actually encode. Raw counts are offset by
+ * 40, and a raw 0 is the "no sensor fitted" marker rather than a reading, so the
+ * lowest real count is 1 and the floor is -39, not -40. */
+#define MODULE_SENSOR_MINIMUM_C (-39)
+#define MODULE_SENSOR_MAXIMUM_C (127)               // decode clamps here
 
 /* Sentinel returned by the cell-voltage getters when no module has reported
  * yet. Deliberately above any real reading so a "lowest cell" search works. */
@@ -258,23 +281,143 @@ static_assert(every_pin_is_unique(),
  * can compare them directly: watt-hours against shunt wattHours, and amp-seconds
  * against shunt ampSeconds (the shunt's 0x527 counter is amp-seconds -- raw/3600
  * is amp-hours). Verified against an independent driver for the same device. */
-#define BATTERY_CAPACITY_WH 14800                   // Wh. 7.4kWh usable per pack, x2 packs == 14.8kWh
-#define BATTERY_CAPACITY_AS 187200                  // As. 26Ah per pack (93,600 As), x2 packs == 187,200 As
+/* Scaled by NUM_PACKS rather than written out for two. These were hardcoded to
+ * the two-pack totals, so a single-pack build divided the real capacity into a
+ * figure twice its size and reported half the true state of charge. */
+/* BOTH capacities must describe the SAME cell voltage window as CELL_EMPTY_VOLTAGE
+ * and CELL_FULL_VOLTAGE below, because recalculate_soc() counts a full 0-100%
+ * against whichever one CALCULATE_SOC_FROM_AMP_SECONDS selects. These are the
+ * gross figures, matching the full 2.8-4.2 V window: BMW's own numbers for HV
+ * battery generation 3.0 are 9.1 kWh storable of which 7.3 kWh usable, and the
+ * 7.3 kWh that used to be here was the usable one -- the narrower window BMW
+ * keeps the cells in, not the one this BMS enforces. Paired with a 26 Ah
+ * amp-second figure it made every SoC reading disagree with itself.
+ *
+ * 96 cells * 3.66 V * 26 Ah = 9135 Wh, which is where BMW's 9.1 kWh comes from. */
+#define BATTERY_CAPACITY_WH_PER_PACK 9100           // Wh gross per pack, over the full cell window
+#define BATTERY_CAPACITY_AS_PER_PACK 93600          // As per pack (26 Ah)
+#define BATTERY_CAPACITY_WH ( BATTERY_CAPACITY_WH_PER_PACK * NUM_PACKS )
+#define BATTERY_CAPACITY_AS ( BATTERY_CAPACITY_AS_PER_PACK * NUM_PACKS )
 #define CALCULATE_SOC_FROM_AMP_SECONDS 1            // Should we calculate SoC from amp seconds (value = 1) or
-                                                    // kWh (value = 0)? 
-#define CELL_EMPTY_VOLTAGE 2900                     // Official min pack voltage = 269V. 269 / 6 / 16 = 2.8020833333V
-#define CELL_FULL_VOLTAGE 4000                      // Official max pack voltage = 398V. 398 / 6 / 16 = 4.1458333333V
+                                                    // kWh (value = 0)?
+
+
+/* Cell voltage window, in millivolts. These are hard limits, not targets:
+ * has_empty_cell() / has_full_cell() inhibit drive and charge at them, and the
+ * cell-range plausibility check in Battery treats anything outside as a bad
+ * reading.
+ *
+ * The OEM window for this pack, per the BMW technical training document for the
+ * G12 LCI PHEV high-voltage battery (generation 3.0, the 26 Ah cell): min 269 V,
+ * max 403 V across 96 cells in series, so 2.802 V and 4.198 V per cell.
+ *
+ * The previous 2.9 / 4.0 V left roughly 5 Ah of the cell's 26 Ah outside the
+ * window while BATTERY_CAPACITY_AS_PER_PACK still claimed all 26, so SoC read
+ * high everywhere and bottomed out near 20% instead of 0.
+ *
+ * Nothing else stands between these and the cells, so the margin has to come
+ * from the layers above: CHARGE_TAPER_START_SOC winds the charger down before
+ * the top, and CHARGE_ACCEPTANCE_PERCENT_OF_C in pack.cpp limits what goes in
+ * cold. Samsung SDI do not publish a datasheet for this cell; 4.2 V is the
+ * OEM's own ceiling, not a headroom figure. */
+#define CELL_EMPTY_VOLTAGE 2800                     // Official min pack voltage = 269V. 269 / 96 = 2.802V
+#define CELL_FULL_VOLTAGE 4200                      // Official max pack voltage = 403V. 403 / 96 = 4.198V
+
+/* Nothing enforced the "SAME window" requirement stated with the capacities above, and it is exactly the
+ * mistake that was already made here once: a 7.3 kWh usable figure paired with
+ * a 26 Ah gross one, which made the two SoC paths disagree with each other and
+ * bottom out around 20% instead of 0. Flipping CALCULATE_SOC_FROM_AMP_SECONDS
+ * would have silently changed every reading.
+ *
+ * Dividing one capacity by the other gives the pack voltage they jointly imply,
+ * and that is checkable: for a lithium cell the average voltage over a full
+ * discharge sits near the middle of its window, never out at either end. A
+ * figure down against CELL_EMPTY_VOLTAGE means the two capacities were measured
+ * over different windows. The old pairing implied 2965 mV/cell against a
+ * 2900-4000 window -- essentially at the floor. The current one implies about
+ * 3646 mV against 2800-4200, comfortably mid-window.
+ *
+ * Wide on purpose: this catches the two capacities describing different
+ * windows, not a cell whose discharge curve is unusually shaped. */
+#define IMPLIED_NOMINAL_CELL_MV                                                  \
+    ( (long long)BATTERY_CAPACITY_WH_PER_PACK * 3600LL * 1000LL                  \
+      / ( (long long)BATTERY_CAPACITY_AS_PER_PACK                                \
+          * CELLS_PER_MODULE * MODULES_PER_PACK ) )
+#define CELL_WINDOW_QUARTER_MV ( ( CELL_FULL_VOLTAGE - CELL_EMPTY_VOLTAGE ) / 4 )
+
+static_assert(IMPLIED_NOMINAL_CELL_MV >= CELL_EMPTY_VOLTAGE + CELL_WINDOW_QUARTER_MV
+           && IMPLIED_NOMINAL_CELL_MV <= CELL_FULL_VOLTAGE - CELL_WINDOW_QUARTER_MV,
+    "BATTERY_CAPACITY_WH_PER_PACK and BATTERY_CAPACITY_AS_PER_PACK imply an average "
+    "cell voltage outside the middle half of the CELL_EMPTY_VOLTAGE..CELL_FULL_VOLTAGE "
+    "window, which means they were measured over different windows. Both must be the "
+    "gross figures for the window this BMS enforces.");
 
 /* Charge / discharge current policy.
  *
  * POLICY CHOICE -- REVIEW THESE. get_max_charge_current_by_soc() was a stub that
  * returned 0, and because it was combined with std::min() the charger was
  * always told 0 A. update_max_discharge_current() was hardcoded to 100 A with a
- * FIXME. The values below are deliberately conservative starting points, not
- * manufacturer figures. */
-#define CHARGE_CURRENT_MAX_PER_PACK_A 125           // A. Matches the top of chargeCurrentMax[]
+ * FIXME. The values below are engineering estimates, not manufacturer figures.
+ *
+ * WHY THE CHARGE SIDE IS A C-RATE AND NOT AN AMPERE FIGURE.
+ *
+ * A bare ampere number has no stated relationship to the cells, and this one had
+ * drifted a long way from them. The limit and the lookup table both plateaued at
+ * 125 A, which on a 26 Ah pack is 4.8C: about twelve times what the donor
+ * vehicle's own 3.7 kW charger ever pushes into this pack (~0.4C), far above the
+ * 0.5-1C that NMC/graphite normally accepts, and -- the giveaway -- HIGHER than
+ * the discharge limit below, which is backwards for essentially every lithium
+ * cell. Deriving it from BATTERY_CAPACITY_AS_PER_PACK means the two cannot
+ * silently drift apart again, and expressing the policy in C makes the number
+ * reviewable against a datasheet instead of against nothing.
+ *
+ * 2.20C is the setting, and it is the REGEN figure, deliberately chosen -- read
+ * the next paragraph before changing anything on the back of it.
+ *
+ * REGEN. maxChargeCurrent is published in the 0x351 frame, which is the only
+ * charge-side number the BMS sends: update_max_charge_current() computes one
+ * number and both the charger and (if your inverter honours it) regen are held
+ * to it. There is no field that can tell the two apart.
+ *
+ * So this is the deliberate choice that paragraph used to warn about: a
+ * short-pulse rating now governs a sustained limit. 2.2C is where the donor
+ * vehicle's 20 kW recuperation figure lands on a 26 Ah pack at 355 V (~57 A),
+ * so it is a rate BMW themselves push into these cells -- but in bursts, off
+ * the brake pedal, not for the length of a charge session. What BMW sustain is
+ * 3.7 kW, about 0.4C.
+ *
+ * The cells cannot tell you which is which either: Samsung SDI publish no
+ * datasheet for the 26 Ah PHEV cell, and the closest published sibling (the
+ * 94 Ah NCM) gives 0.77C standard charge and no pulse rating at all.
+ *
+ * What keeps this honest is that nothing downstream sustains 2.2C anyway. A
+ * wall charger that large is not what this pack will be plugged into, the SoC
+ * taper above CHARGE_TAPER_START_SOC pulls the ceiling down through the top of
+ * the charge, and the acceptance curve in pack.cpp only reaches 2.2C above
+ * 25C -- cold cells are still held to the plating limits, which did not move.
+ * If you ever do put a >1C charger on it, drop this back to 100 and accept the
+ * lower regen, because at that point the two uses really do conflict. */
+#define PACK_CAPACITY_AH ( BATTERY_CAPACITY_AS_PER_PACK / 3600 )   // 26 Ah
+
+#define CHARGE_C_RATE_PERCENT 220                   // Sustained charge rate at the plateau, in % of 1C
+#define CHARGE_CURRENT_MAX_PER_PACK_A ( ( PACK_CAPACITY_AH * CHARGE_C_RATE_PERCENT + 50 ) / 100 )
 #define DISCHARGE_CURRENT_MAX_PER_PACK_A 100        // A. Per pack, when not derated
+
+static_assert(PACK_CAPACITY_AH > 0,
+    "BATTERY_CAPACITY_AS_PER_PACK must be at least one amp-hour");
+static_assert(CHARGE_CURRENT_MAX_PER_PACK_A > 0,
+    "CHARGE_C_RATE_PERCENT rounds the charge limit down to zero amps");
+/* Charge ratings are below discharge ratings on essentially every lithium cell,
+ * so the inverse is far more likely to be a mistake than a decision. If a
+ * datasheet really does say otherwise, relax this deliberately. */
+static_assert(CHARGE_CURRENT_MAX_PER_PACK_A <= DISCHARGE_CURRENT_MAX_PER_PACK_A,
+    "charge limit exceeds the discharge limit; check CHARGE_C_RATE_PERCENT against the cell datasheet");
 #define CHARGE_TAPER_START_SOC 90                   // %. Above this, taper charge current linearly to 0 at 100%
+/* Above this state of charge the BMS tells the inverter not to regenerate.
+ * This was written out as a bare `soc > 90` in bms.h, the only policy threshold
+ * in the project that did not live here -- so it could not be changed from the
+ * settings file and would not follow CHARGE_TAPER_START_SOC if that moved. */
+#define REGEN_BLOCK_SOC 90
 
 /*==============================================================================
  * Cell balancing
@@ -409,6 +552,11 @@ static_assert(WEB_SNAPSHOT_TICKS >= 1,
  * Inputs are polled every IO_POLL_INTERVAL_MS, so this is the debounce time. */
 #define IO_DEBOUNCE_SAMPLES 3
 #define IO_POLL_INTERVAL_MS 10
+#define IO_POLL_TICKS ( IO_POLL_INTERVAL_MS / BMS_WORKER_TICK_MS )
+static_assert(IO_POLL_TICKS * BMS_WORKER_TICK_MS == IO_POLL_INTERVAL_MS,
+    "IO_POLL_INTERVAL_MS must be a whole number of BMS_WORKER_TICK_MS ticks");
+static_assert(IO_POLL_TICKS >= 1,
+    "IO_POLL_INTERVAL_MS cannot be shorter than one worker tick");
 
 /* How long a contactor must have been commanded open before its feedback is
  * believed for weld detection. Contactors take time to physically open. */

@@ -114,6 +114,13 @@ static void health_check_callback() {
 
     reconcile_inhibit_reasons();
 
+    /* The pack CAN controllers report their own bus errors, and nothing used
+     * to read them. See BatteryPack::check_can_health(). */
+    battery.check_pack_can_health();
+
+    // Diagnostic cross-check of the shunt; see Bms::check_shunt_plausibility().
+    bms.check_shunt_plausibility();
+
     /* Weld detection runs every cycle regardless of state. It used to be called
      * only from state_standby, so a contactor that welded during drive or
      * charge was never noticed. The check itself decides when the feedback is
@@ -195,9 +202,11 @@ static void health_check_callback() {
  */
 static void calculations_callback() {
     extern Bms bms;
+    /* SoC first: get_max_charge_current_by_soc() tapers on it, so computing the
+     * charge current before refreshing it always used a one-second-old SoC. */
+    bms.recalculate_soc();
     bms.update_max_charge_current();
     bms.update_max_discharge_current();
-    bms.recalculate_soc();
     // TODO : range estimate
 }
 
@@ -248,6 +257,14 @@ void Bms::send_shunt_reset_message() {
 static void send_limits_message_callback() {
     extern Bms bms;
     extern Battery battery;
+    /* Recompute immediately before transmitting rather than relying on the
+     * cached values. calculations_callback() runs on a different tick offset,
+     * so an inhibit asserted just after it left this frame advertising the old
+     * non-zero limit for up to a second -- the inhibit pin was already asserted,
+     * but an inverter that obeys only the CAN limit would have kept drawing. */
+    bms.recalculate_soc();
+    bms.update_max_charge_current();
+    bms.update_max_discharge_current();
     CANMessage limitsFrame;
     zero_frame(&limitsFrame);
     limitsFrame.id = 0x351;
@@ -466,7 +483,18 @@ static void send_status_message_callback() {
      *   shunt voltage field 0.01 V, shunt voltage1 is mV        -> mV / 10 */
     put_u16_le(&statusFrame, 0, (uint16_t)( battery.get_voltage() / 10 ));
     put_i16_le(&statusFrame, 2, (int16_t)( shunt.get_amps() / 100 ));
-    put_i16_le(&statusFrame, 4, (int16_t)( battery.get_highest_sensor_temperature() * 10 ));
+    /* With no module reporting, get_highest_sensor_temperature() is the -126
+     * sentinel, and this used to broadcast it as a -126.0 C battery temperature.
+     * The field has no "invalid" encoding, so send the coldest value a real
+     * sensor can produce instead: that keeps the conservative direction (a
+     * charger reading it will not charge) without putting an impossible number
+     * on the bus. Invalidity itself is already signalled -- too_cold_to_charge()
+     * is true while the data is stale, so 0x351 is already advertising 0 A, and
+     * IE_TEMPERATURE_STALE raises the general alarm in 0x35A. */
+    const int16_t reportedTemperature = battery.have_temperature_reading()
+        ? (int16_t)( battery.get_highest_sensor_temperature() * 10 )
+        : (int16_t)( MODULE_SENSOR_MINIMUM_C * 10 );
+    put_i16_le(&statusFrame, 4, reportedTemperature);
     put_u16_le(&statusFrame, 6, (uint16_t)( shunt.get_voltage1() / 10 ));
     bms.send_frame(&statusFrame, false);
 }
@@ -489,10 +517,26 @@ static void send_pack_can_error_counters_message_callback() {
     CANMessage packCanErrorCountersFrame;
     zero_frame(&packCanErrorCountersFrame);
     packCanErrorCountersFrame.id = 0x357;
-    put_u16_le(&packCanErrorCountersFrame, 0, battery.get_can_tx_error_count_for_pack(0));
-    put_u16_le(&packCanErrorCountersFrame, 2, battery.get_can_rx_error_count_for_pack(0));
-    put_u16_le(&packCanErrorCountersFrame, 4, battery.get_can_tx_error_count_for_pack(1));
-    put_u16_le(&packCanErrorCountersFrame, 6, battery.get_can_rx_error_count_for_pack(1));
+    /* Two pairs of counters, but only NUM_PACKS packs exist. Pack 1 used to be
+     * read unconditionally, which indexes one past the end of Battery::packs[]
+     * in a single-pack build -- the same defect as the welding byte, but this
+     * one slipped past the sanitizers because the index arrives as a runtime
+     * parameter into a member array rather than as a constant. Unused slots
+     * stay zero, which zero_frame() has already written. */
+    /* The frame has room for two pairs; a battery may have fewer packs. Written
+     * as a preprocessor choice rather than a ternary so neither configuration
+     * compiles a comparison whose operands are identical. */
+#if NUM_PACKS < 2
+    const int packsInFrame = NUM_PACKS;
+#else
+    const int packsInFrame = 2;
+#endif
+    for ( int p = 0; p < packsInFrame; p++ ) {
+        put_u16_le(&packCanErrorCountersFrame, p * 4,
+                   battery.get_can_tx_error_count_for_pack(p));
+        put_u16_le(&packCanErrorCountersFrame, p * 4 + 2,
+                   battery.get_can_rx_error_count_for_pack(p));
+    }
     bms.send_frame(&packCanErrorCountersFrame, false);
 }
 
@@ -546,6 +590,44 @@ static void send_pack_can_error_counters_message_callback() {
  * 0x10 and 0x40 for bits 0, 2, 4 and 6 respectively.
  */
 
+/*
+ * One alarm or warning field: two bits, per the CAN-bus BMS convention these
+ * ids follow.
+ *
+ *   01  active
+ *   10  explicitly not active
+ *   00  not evaluated by this firmware
+ *
+ * Every field used to be written as a single bit set when active and left at 00
+ * otherwise, which conflates "no alarm" with "this BMS does not check". Victron
+ * tolerates that -- it only looks for the active bit -- but a stricter receiver
+ * reads 00 as unknown, so a pack with nothing wrong reported nothing known.
+ * The fields this firmware genuinely does not compute are still left at 00,
+ * which is now a true statement rather than an accident.
+ */
+static void set_alarm_field(CANMessage* frame, int byteIndex, int fieldIndex, bool active) {
+    frame->data[byteIndex] |= (uint8_t)( ( active ? 0x01u : 0x02u ) << ( fieldIndex * 2 ) );
+}
+
+/*
+ * 0x35F -- battery model, firmware version and nameplate capacity.
+ *
+ * The version was previously reported nowhere at all, so a BMS on the bench and
+ * one in the car were indistinguishable. Layout follows the same CAN-bus BMS
+ * convention as the other 0x35x ids: model id, firmware version, then online
+ * capacity in whole amp-hours.
+ */
+static void send_battery_info_message_callback() {
+    extern Bms bms;
+    CANMessage infoFrame;
+    zero_frame(&infoFrame);
+    infoFrame.id = 0x35F;
+    put_u16_le(&infoFrame, 0, (uint16_t)BATTERY_MODEL_ID);
+    put_u16_le(&infoFrame, 2, (uint16_t)VERSION_U16);
+    put_u16_le(&infoFrame, 4, (uint16_t)( BATTERY_CAPACITY_AS / 3600 ));
+    bms.send_frame(&infoFrame, false);
+}
+
 static void send_alarm_message_callback() {
     extern Bms bms;
     extern Battery battery;
@@ -553,58 +635,43 @@ static void send_alarm_message_callback() {
     zero_frame(&alarmFrame);
     alarmFrame.id = 0x35A;
 
-    // byte 0, bit 0, general alarm
-    if ( bms.get_internal_error() ) { alarmFrame.data[0] |= 0x01; }
-    // byte 0, bit 2 : overvolt alarm
-    if ( battery.has_full_cell() ) { alarmFrame.data[0] |= 0x04; }
-    // byte 0, bit 4 : undervolt alarm
-    if ( battery.has_empty_cell() ) { alarmFrame.data[0] |= 0x10; }
-    // byte 0, bit 6 : high temp alarm
-    if ( battery.too_hot() ) { alarmFrame.data[0] |= 0x40; }
+    const bool contactorsClosed = bms.charge_is_enabled() || bms.ignition_is_on();
 
-    // byte 1, bit 0 : low temp alarm
-    if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x01; }
-    // byte 1, bit 2 : high temp charge alarm
-    if ( battery.too_hot() ) { alarmFrame.data[1] |= 0x04; }
-    // byte 1, bit 4 : low temp charge alarm
-    if ( battery.too_cold_to_charge() ) { alarmFrame.data[1] |= 0x10; }
-    // FIXME byte 1, bit 6 : high current alarm
+    // ---- bytes 0-3: alarms ----
+    set_alarm_field(&alarmFrame, 0, 0, bms.get_internal_error());     // general
+    set_alarm_field(&alarmFrame, 0, 1, battery.has_full_cell());      // overvolt
+    set_alarm_field(&alarmFrame, 0, 2, battery.has_empty_cell());     // undervolt
+    set_alarm_field(&alarmFrame, 0, 3, battery.too_hot());            // high temp
 
-    // FIXME byte 2, bit 0 : high charge current alarm
-    // byte 2, bit 2 : contactor on alarm
-    if ( bms.charge_is_enabled() || bms.ignition_is_on() ) { alarmFrame.data[2] |= 0x04; }
-    // FIXME byte 2, bit 4 : short circuit alarm
-    // byte 2, bit 6 : internal error alarm
-    if ( bms.get_internal_error() ) { alarmFrame.data[2] |= 0x40; }
+    set_alarm_field(&alarmFrame, 1, 0, battery.too_cold_to_charge()); // low temp
+    set_alarm_field(&alarmFrame, 1, 1, battery.too_hot());            // high temp, charge
+    set_alarm_field(&alarmFrame, 1, 2, battery.too_cold_to_charge()); // low temp, charge
+    // byte 1 field 3: high current -- not evaluated, left at 00
 
-    // byte 3, bit 0 : cell delta alarm
-    if ( battery.cell_delta_above_alarm() ) { alarmFrame.data[3] |= 0x01; }
+    // byte 2 field 0: high charge current -- not evaluated, left at 00
+    set_alarm_field(&alarmFrame, 2, 1, contactorsClosed);             // contactor
+    // byte 2 field 2: short circuit -- not evaluated, left at 00
+    set_alarm_field(&alarmFrame, 2, 3, bms.get_internal_error());     // internal error
 
-    // FIXME byte 4, bit 0 : general warn
-    // byte 4, bit 2 : overvolt warn
-    if ( battery.has_full_cell() ) { alarmFrame.data[4] |= 0x04; }
-    // byte 4, bit 4 : undervolt warn
-    if ( battery.has_empty_cell() ) { alarmFrame.data[4] |= 0x10; }
-    // byte 4, bit 6 : high temp warn
-    if ( battery.too_hot() ) { alarmFrame.data[4] |= 0x40; }
+    set_alarm_field(&alarmFrame, 3, 0, battery.cell_delta_above_alarm());
 
-    // byte 5, bit 0 : low temp warn
-    if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x01; }
-    // byte 5, bit 2 : high temp charge warn
-    if ( battery.too_hot() ) { alarmFrame.data[5] |= 0x04; }
-    // byte 5, bit 4 : low temp charge warn
-    if ( battery.too_cold_to_charge() ) { alarmFrame.data[5] |= 0x10; }
-    // FIXME byte 5, bit 6 : high current warn
+    // ---- bytes 4-7: warnings, same layout ----
+    // byte 4 field 0: general warning -- not evaluated, left at 00
+    set_alarm_field(&alarmFrame, 4, 1, battery.has_full_cell());
+    set_alarm_field(&alarmFrame, 4, 2, battery.has_empty_cell());
+    set_alarm_field(&alarmFrame, 4, 3, battery.too_hot());
 
-    // FIXME byte 6, bit 0 : high charge current warn
-    // byte 6, bit 2 : contactor on warn
-    if ( bms.charge_is_enabled() || bms.ignition_is_on() ) { alarmFrame.data[6] |= 0x04; }
-    // FIXME byte 6, bit 4 : short circuit warn
-    // byte 6, bit 6 : internal error warn
-    if ( bms.get_internal_error() ) { alarmFrame.data[6] |= 0x40; }
+    set_alarm_field(&alarmFrame, 5, 0, battery.too_cold_to_charge());
+    set_alarm_field(&alarmFrame, 5, 1, battery.too_hot());
+    set_alarm_field(&alarmFrame, 5, 2, battery.too_cold_to_charge());
+    // byte 5 field 3: high current warning -- not evaluated, left at 00
 
-    // FIXME byte 7, bit 0 : cell delta warn
-    if ( battery.cell_delta_above_warn() ) { alarmFrame.data[7] |= 0x01; }
+    // byte 6 field 0: high charge current warning -- not evaluated, left at 00
+    set_alarm_field(&alarmFrame, 6, 1, contactorsClosed);
+    // byte 6 field 2: short circuit warning -- not evaluated, left at 00
+    set_alarm_field(&alarmFrame, 6, 3, bms.get_internal_error());
+
+    set_alarm_field(&alarmFrame, 7, 0, battery.cell_delta_above_warn());
 
     bms.send_frame(&alarmFrame, false);
 }
@@ -639,6 +706,17 @@ static void send_alarm_message_callback() {
  * was big-endian and that the order here was reversed; that was wrong, and the
  * order below is correct as-is.
  */
+/* The reading occupies bytes 2-5, so a frame shorter than 6 bytes does not
+ * contain one. Without this check a truncated or spurious frame on one of the
+ * shunt ids was decoded from whatever those bytes happened to hold and stored
+ * as a real measurement -- and, worse, the caller's heartbeat() then kept the
+ * shunt marked alive on the strength of it. */
+static const int SHUNT_PAYLOAD_BYTES = 6;
+
+static bool shunt_frame_is_complete(const CANMessage& m) {
+    return m.len >= SHUNT_PAYLOAD_BYTES;
+}
+
 static int32_t shunt_payload(const CANMessage& m) {
     return (int32_t)( ((uint32_t)m.data[5] << 24)
                     | ((uint32_t)m.data[4] << 16)
@@ -670,6 +748,11 @@ static void handle_main_CAN_messages_callback() {
         ACAN_ESP32::can.recoverFromBusOff();
     }
     if ( bms.read_frame(&m) ) {
+        /* Every id handled below is an ISA shunt reading in bytes 2-5. */
+        if ( m.id >= 0x521 && m.id <= 0x528 && !shunt_frame_is_complete(m) ) {
+            bms.increment_can_rx_error_count();
+            return;
+        }
         switch ( m.id ) {
             // ISA shunt amps
             case 0x521:
@@ -733,6 +816,7 @@ void Bms::init(Battery* _battery, Io* _io, Shunt* _shunt) {
      * left stale diagnostics reachable through the web snapshot after a
      * re-init. */
     invalidEventCounter = 0;
+    shuntImplausibleSince = 0;
     illegalStateTransition = false;
     canTxErrorCount = 0;
     canRxErrorCount = 0;
@@ -819,8 +903,11 @@ static void bms_worker_task(void* /*pvParameters*/) {
         battery.read_message();
         handle_main_CAN_messages_callback();
 
-        // Every 10 ms: sample the debounced inputs
-        if ( ( workerTick % 2 ) == 0 ) {
+        /* Sample the debounced inputs every IO_POLL_INTERVAL_MS. The divisor was
+         * written out as 2, so IO_POLL_INTERVAL_MS was documentation that
+         * nothing read: changing it moved the debounce time quoted in
+         * settings.h without moving the rate inputs were actually sampled at. */
+        if ( ( workerTick % IO_POLL_TICKS ) == 0 ) {
             io.poll_inputs();
         }
 
@@ -843,6 +930,9 @@ static void bms_worker_task(void* /*pvParameters*/) {
 
         // Every 5 s
         if ( ( workerTick % 1000 ) == 160 ) { send_module_liveness_message_callback(); }
+        /* Model, firmware version and nameplate capacity never change, so 5 s
+         * is ample. Offset 360 so it shares a tick with nothing else. */
+        if ( ( workerTick % 1000 ) == 360 ) { send_battery_info_message_callback(); }
 
 #if WEB_INTERFACE_ENABLED
         /* Refresh what the web interface serves. Fires on the LAST tick of each
@@ -1012,6 +1102,15 @@ static const InhibitReason kReasonsBySeverity[] = {
     R_BATTERY_EMPTY, R_BATTERY_FULL, R_CHARGING,
 };
 
+/* Every InhibitReason except R_NONE must appear above. A reason missing from
+ * the table is not a compile error and not visibly wrong in operation: the
+ * inhibit is still applied, but bytes 3 and 4 of 0x352 report R_NONE for it,
+ * which reads on the bus as "not inhibited". */
+static_assert(sizeof(kReasonsBySeverity) / sizeof(kReasonsBySeverity[0])
+              == (size_t)R_STARTUP,
+    "kReasonsBySeverity must list every InhibitReason except R_NONE; "
+    "R_STARTUP is the highest-numbered reason and doubles as the count");
+
 static int8_t most_severe_reason(uint16_t mask) {
     for ( unsigned i = 0; i < sizeof(kReasonsBySeverity)/sizeof(kReasonsBySeverity[0]); i++ ) {
         if ( mask & inhibit_reason_bit(kReasonsBySeverity[i]) ) {
@@ -1021,8 +1120,17 @@ static int8_t most_severe_reason(uint16_t mask) {
     return (int8_t)R_NONE;
 }
 
+/* Asserting an inhibit zeroes the advertised limit in the same breath.
+ *
+ * The limits are a cache refreshed once a second. Zeroing here means nothing can
+ * ever observe "inhibited, but you may draw 300 A" in the window between the
+ * decision and the next refresh -- not the 0x351 frame, not the web snapshot,
+ * not anything added later. Withdrawing an inhibit deliberately does NOT restore
+ * a limit here: that waits for the next recalculation, so the permissive
+ * direction is always the considered one. */
 void Bms::enable_drive_inhibit(const char* context, InhibitReason reason) {
     driveInhibitReasons |= inhibit_reason_bit(reason);
+    maxDischargeCurrent = 0;
     io->enable_drive_inhibit(context);
 }
 
@@ -1044,8 +1152,10 @@ int8_t Bms::get_drive_inhibit_reason() {
 
 // CHARGE_INHIBIT
 
+// See enable_drive_inhibit() for why the limit is zeroed here.
 void Bms::enable_charge_inhibit(const char* context, InhibitReason reason) {
     chargeInhibitReasons |= inhibit_reason_bit(reason);
+    maxChargeCurrent = 0;
     io->enable_charge_inhibit(context);
 }
 
@@ -1102,6 +1212,83 @@ uint8_t Bms::get_soc() {
  *
  * 0 khw/ah == 100% charged. Value goes negative as we draw energy from the pack.
  */
+/*
+ * Cross-check the shunt against itself and against what the BMS believes it is
+ * doing. Diagnostic only: this raises an internal error and nothing else, and
+ * never gates a contactor, a limit or a state transition.
+ *
+ * WHY THIS EXISTS. The sign convention on 0x356 is not something this firmware
+ * can verify from the bench. It is pinned by recalculate_soc(), which treats
+ * the shunt's amp-second counter as reading 0 at full and going negative as
+ * energy is drawn; that counter is the integral of current, so current must be
+ * negative on discharge and positive on charge -- which is exactly what the
+ * 0x356 current field wants, so the reading is passed through unscaled in sign.
+ * That chain is sound but it rests on the device behaving as its documentation
+ * says, and a shunt wired backwards would satisfy every internal consistency
+ * check while reporting the opposite of the truth. Charging is the one case
+ * where the BMS independently knows the answer, so that is what is checked.
+ *
+ * Two contradictions are looked for:
+ *   1. Charging with a sustained current flowing the wrong way. A shunt fitted
+ *      or decoded backwards shows up here and nowhere else.
+ *   2. Reported power disagreeing with current x voltage. This catches one of
+ *      the three readings being decoded wrongly while the others are fine.
+ */
+void Bms::check_shunt_plausibility() {
+    if ( shunt->is_dead() ) {
+        shuntImplausibleSince = 0;
+        clear_internal_error(IE_SHUNT_IMPLAUSIBLE);
+        return;
+    }
+
+    const int32_t amps = shunt->get_amps();
+    const int32_t millivolts = shunt->get_voltage1();
+    bool contradiction = false;
+
+    /* 1. Direction, while the BMS knows a charger is pushing current in. */
+    if ( state == state_charging && charge_is_enabled()
+         && amps < -SHUNT_SIGNIFICANT_CURRENT_MA ) {
+        contradiction = true;
+    }
+
+    /* 2. Power against current x voltage. Both sides in watts; the shunt
+     *    reports milliamps and millivolts, so the product needs 1e6. Compared
+     *    with a wide tolerance because these are three independent samples
+     *    taken at slightly different moments, not a simultaneous triple. */
+    if ( millivolts > 0 && ( amps > SHUNT_SIGNIFICANT_CURRENT_MA
+                          || amps < -SHUNT_SIGNIFICANT_CURRENT_MA ) ) {
+        const int64_t expectedWatts =
+            ( (int64_t)amps * (int64_t)millivolts ) / 1000000;
+        const int64_t reportedWatts = (int64_t)shunt->get_watts();
+        const int64_t difference = ( reportedWatts > expectedWatts )
+                                 ? ( reportedWatts - expectedWatts )
+                                 : ( expectedWatts - reportedWatts );
+        const int64_t magnitude = ( expectedWatts < 0 ) ? -expectedWatts : expectedWatts;
+        if ( difference > magnitude / 2 + 50 ) {
+            contradiction = true;
+        }
+    }
+
+    if ( !contradiction ) {
+        shuntImplausibleSince = 0;
+        clear_internal_error(IE_SHUNT_IMPLAUSIBLE);
+        return;
+    }
+    if ( shuntImplausibleSince == 0 ) {
+        shuntImplausibleSince = get_clock_ms();
+        return;
+    }
+    if ( ( get_clock_ms() - shuntImplausibleSince ) >= SHUNT_IMPLAUSIBLE_MS ) {
+        if ( !has_internal_error(IE_SHUNT_IMPLAUSIBLE) ) {
+            printf("[bms] WARNING shunt readings contradict the BMS state: "
+                   "%d mA, %d mV, %d W while charging -- check the shunt wiring "
+                   "and the 0x356 current sign\n",
+                   (int)amps, (int)millivolts, (int)shunt->get_watts());
+        }
+        set_internal_error(IE_SHUNT_IMPLAUSIBLE);
+    }
+}
+
 void Bms::recalculate_soc() {
     /* The shunt counter reads 0 at full and goes negative as energy is drawn,
      * so remaining = capacity + counter. Computed in 64-bit and clamped: the
@@ -1137,13 +1324,20 @@ void Bms::clear_internal_error(InternalErrorSource source) {
  * acts on), not Battery's instantaneous one -- the reported bit used to
  * disagree with the behaviour it was supposed to describe. */
 uint8_t Bms::get_error_byte() {
-    return (
+    return (uint8_t)(
         0x00 | \
         (internalErrorFlags != 0) | \
         packs_are_imbalanced() << 1 | \
         shunt->is_dead() << 2 | \
         illegalStateTransition << 3 | \
-        ! battery->is_alive() << 4
+        ( ! battery->is_alive() ) << 4 | \
+        /* Bit 5: a dead cell. It was reported nowhere on the bus. The undervolt
+         * alarm does fire alongside it, because DEAD_CELL_VOLTAGE is below
+         * CELL_EMPTY_VOLTAGE, but that is also what a merely flat battery looks
+         * like -- and a flat battery is a normal condition you drive to a
+         * charger, while a dead cell means a pack is being isolated. Nothing on
+         * the bus could tell the two apart. */
+        battery->has_dead_cell() << 5
     );
 }
 

@@ -39,8 +39,8 @@ void Battery::initialise(Bms* _bms) {
     voltage = 0;
     lowestCellVoltage = 0;
     highestCellVoltage = 0;
-    lowestSensorTemperature = 0;
-    highestSensorTemperature = 0;
+    lowestSensorTemperature = 126;      // see the note in battery.h: sentinels,
+    highestSensorTemperature = -126;    // not 0, which is a real temperature
     numPacks = NUM_PACKS;
     bms = _bms;
 
@@ -70,8 +70,14 @@ void Battery::fill_snapshot(WebSnapshot& out) {
     out.lowestCellVoltage = get_lowest_cell_voltage();
     out.highestCellVoltage = get_highest_cell_voltage();
     out.cellDelta = get_cell_delta();
-    out.lowestTemperature = get_lowest_sensor_temperature();
-    out.highestTemperature = get_highest_sensor_temperature();
+    /* The pack getters return -126 when no module has reported, which is a
+     * sentinel and not a reading. Pass it on as NO_TEMPERATURE_READING, the
+     * sentinel the page already understands from the per-module sensors, rather
+     * than as a plausible-looking -126 C. */
+    out.lowestTemperature = have_temperature_reading()
+                          ? get_lowest_sensor_temperature() : NO_TEMPERATURE_READING;
+    out.highestTemperature = have_temperature_reading()
+                           ? get_highest_sensor_temperature() : NO_TEMPERATURE_READING;
     out.batteryAlive = is_alive();
     out.tooHot = too_hot();
     out.tooColdToCharge = too_cold_to_charge();
@@ -106,6 +112,15 @@ void Battery::read_message() {
     for ( int p = 0; p < numPacks; p++ ) {
         packs[p].poll_can();
         packs[p].read_message();
+    }
+}
+
+/* Called from the health check, not from the 5 ms drain: reading EFLG is an SPI
+ * transaction per pack and the flags it reports latch, so there is nothing to
+ * gain from sampling it at tick rate. */
+void Battery::check_pack_can_health() {
+    for ( int p = 0; p < numPacks; p++ ) {
+        packs[p].check_can_health();
     }
 }
 
@@ -236,11 +251,23 @@ void Battery::process_voltage_update() {
     recalculate_voltage();
     recalculate_lowest_cell_voltage();
     recalculate_highest_cell_voltage();
-    /* Refresh the "voltages matched" timestamp only on a measurement we can
-     * actually trust. "Cannot measure" is not "matched": treating it as one is
-     * what let the imbalance hold withdraw itself, and it would also let a
-     * balance burst mask a real imbalance for as long as the burst lasted. */
-    if ( bms != nullptr && pack_voltages_are_comparable() && !packs_are_imbalanced() ) {
+    /* The BMS infers "imbalanced" from the ABSENCE of a recent match, so there
+     * are three cases here, not two, and the third is easy to get wrong.
+     *
+     *   comparable and matched     -> refresh: the packs demonstrably agree.
+     *   comparable and mismatched  -> leave it: let the timer run and latch.
+     *   not comparable             -> refresh, which pauses the timer.
+     *
+     * The last one looks like "treat unmeasurable as matched", which is exactly
+     * the bug that let the imbalance hold withdraw itself -- but that loop only
+     * existed because inhibiting the contactors was itself what made the packs
+     * unmeasurable. pack_voltage_is_comparable() no longer looks at contactor
+     * state, so asserting the hold cannot feed back into the measurement and
+     * the loop is gone. Letting the timer run while unmeasurable instead means
+     * a 60 s balance burst -- during which readings are deliberately discarded
+     * -- decays into a declared imbalance after 3 s and holds every contactor
+     * open for the rest of the burst, on packs that are perfectly matched. */
+    if ( bms != nullptr && ( !pack_voltages_are_comparable() || !packs_are_imbalanced() ) ) {
         this->bms->pack_voltages_match_heartbeat();
     }
 }
@@ -468,6 +495,20 @@ void Battery::update_highest_sensor_temperature() {
         }
     }
     this->highestSensorTemperature = newHighestSensorTemperature;
+}
+
+/*
+ * Whether the sensor temperatures are real readings rather than the "no module
+ * has reported" sentinels.
+ *
+ * There are TWO sentinels, not one, and they sit at opposite ends: the highest
+ * getter starts its search at -126 and the lowest starts at +126, so that each
+ * comparison works before any reading has arrived. Testing both against -126
+ * only ever caught the highest -- the lowest reads +126 when there is no data,
+ * which is comfortably greater than -126 and so looked like a real reading.
+ */
+bool Battery::have_temperature_reading() {
+    return highestSensorTemperature > -126 && lowestSensorTemperature < 126;
 }
 
 int8_t Battery::get_highest_sensor_temperature() {
@@ -797,5 +838,11 @@ bool Battery::is_alive() {
 }
 
 bool Battery::contactor_is_welded(uint8_t packId) {
+    /* Bounds-checked for the same reason as the CAN counter accessors: a
+     * runtime pack index into a fixed member array is invisible to ASan and
+     * UBSan alike, so an out-of-range id reads adjacent memory silently. */
+    if ( packId >= numPacks ) {
+        return false;
+    }
     return packs[packId].contactors_are_welded();
 }

@@ -331,5 +331,11 @@ int8_t BatteryModule::get_highest_temperature() {
 
 // Return true if any temperature sensor is over the max temperature
 bool BatteryModule::has_temperature_sensor_over_max() {
-    return ( get_highest_temperature() > MAXIMUM_TEMPERATURE );
+    /* >=, matching update_temperature_latches(), which latches too_hot at
+     * exactly MAXIMUM_TEMPERATURE. This used to be a strict >, so at exactly
+     * the limit the two disagreed: the state machine called the battery too hot
+     * while this -- the safety check inside get_max_charge_current_by_temperature()
+     * -- still permitted a charge current. The fault path masked it in practice,
+     * but a safety check must never be more permissive than the fault it backs up. */
+    return ( get_highest_temperature() >= MAXIMUM_TEMPERATURE );
 }

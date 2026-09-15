@@ -35,7 +35,7 @@ if [ "$1" = "--coverage" ]; then
     ./testrun-cov > /dev/null || rc=$?
 
     build_and_run cov1 testrun-cov-single "-DNUM_PACKS_CFG=1" \
-        single/test_single_main.cpp sim/sim.cpp sim/unit.cpp $SRC
+        single/test_single_main.cpp test_fuzz.cpp sim/sim.cpp sim/unit.cpp $SRC
     ./testrun-cov-single > /dev/null || rc=$?
 
     # Per-configuration .gcov, kept apart so the line hits can be unioned.
@@ -86,6 +86,6 @@ else
     echo
     echo "=== single-pack configuration (-DNUM_PACKS_CFG=1) ==="
     g++-14 $FLAGS -DNUM_PACKS_CFG=1 -pthread -fsanitize=address,undefined \
-        -o testrun-single single/test_single_main.cpp sim/sim.cpp sim/unit.cpp $SRC
+        -o testrun-single single/test_single_main.cpp test_fuzz.cpp sim/sim.cpp sim/unit.cpp $SRC
     ./testrun-single
 fi

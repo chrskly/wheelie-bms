@@ -85,6 +85,7 @@ class BatteryPack {
       /* Pack CAN controllers run in polled mode; this wakes the ACAN2515
        * driver task so it can service the MCP2515 over SPI. */
       void poll_can();
+      void check_can_health();
       bool send_frame(CANMessage *frame);
 
       // Cell balancing
@@ -122,11 +123,24 @@ class BatteryPack {
       bool contactors_are_inhibited();
       bool contactors_are_welded();
 
-      int16_t get_max_discharge_current();
+      /* There is deliberately no per-pack get_max_discharge_current(). There was
+       * one, and it was a stub that returned 0 -- the same shape as the bug
+       * that once told the charger 0 A for the life of the program, because
+       * get_max_charge_current_by_soc() was also a stub combined with a min().
+       * Nothing called it, so it was harmless, but it mirrored the charge-side
+       * API closely enough that wiring up per-pack discharge derating would
+       * naturally have called it and silently got zero. Discharge is a flat
+       * per-pack figure applied in Bms::update_max_discharge_current(); if it
+       * ever needs derating, write it then rather than leaving a hole shaped
+       * like an implementation. */
       uint16_t get_max_charge_current_by_temperature();
-      /* Safe lookup into chargeCurrentMax[], which is indexed by
-       * (temperature + 10) and only covers -10C..+39C. */
+      /* Safe lookup into the charge current table in pack.cpp, which is
+       * indexed by (temperature + 10) and only covers -10C..+39C. */
       uint16_t charge_current_for_temperature(int8_t temperature);
+      /* What the pack can accept given the spread between its coldest and
+       * hottest sensor. Always use this rather than looking up a single
+       * temperature: the two ends are limited by different mechanisms. */
+      uint16_t charge_current_for_temperature_range(int8_t coldest, int8_t hottest);
 
       void increment_can_tx_error_count() { canTxErrorCount++; }
       void increment_can_rx_error_count() { canRxErrorCount++; }
@@ -154,6 +168,8 @@ class BatteryPack {
        * any cell data has arrived. */
       uint8_t contactorInhibitReasons = CI_STARTUP;
       uint64_t contactorInhibitedSince = 0;   // get_clock_ms(), for weld-check settling
+      uint8_t previousErrorFlags = 0;         // last MCP2515 EFLG, for rising-edge detection
+      uint16_t previousReceivePeak = 0;       // last driver receive-buffer high-water mark
 
       /* Balancing duty cycle. BALANCE_BURST commands the modules to bleed;
        * BALANCE_REST lets them recover so the next measurement is honest. */
@@ -176,21 +192,6 @@ class BatteryPack {
       bool haveTemperatureBaseline = false;
       CANMessage pollModuleFrame;
 
-
-      // C = 26Ah
-      // -10° => +39° => whole charging range
-      // below -10° => no charging, try and heat the battery
-      // -10° to -1° => 3A to 6A
-      //   0° to 15° => 4A to 125A
-      //  16° to 35° => 125A
-      //  36° to 39° => 50A
-      // above 40° => no charging
-      uint8_t chargeCurrentMax[50] = {
-         3, 3, 3, 4, 4, 4, 5, 5, 6, 6,  // -10° to -1°
-         13, 20, 27, 34, 41, 48, 55, 62, 69, 76, 83, 90, 97, 104, 111, 118,  // 0° to 15°
-         125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125, 125,  // 16° to 35°
-         50, 50, 50, 50,  // 36° to 39°
-      };
 
       uint64_t lastTemperatureSampleTime = 0;
       int8_t lastTemperatureSample = 0;

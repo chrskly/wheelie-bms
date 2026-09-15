@@ -10,7 +10,8 @@ extern uint32_t sim_main_begin_error;
 extern uint32_t sim_main_status_flags;
 class ACAN_ESP32 { public: uint32_t begin(const ACAN_ESP32_Settings&) { return sim_main_begin_error; }
   bool tryToSend(const CANMessage& m) { if (sim_main_tx_fails) return false; SimFrame f; f.id=m.id; f.len=m.len;
-      for(int i=0;i<8;i++) f.data[i]=m.data[i]; sim_main_tx.push_back(f); return true; }
+      for(int i=0;i<8;i++) f.data[i]=m.data[i];
+      f.sentAtMs = sim_now_us / 1000; sim_main_tx.push_back(f); return true; }
   bool receive(CANMessage& m) { if(sim_main_rx.empty()) return false;
       SimFrame f=sim_main_rx.front(); sim_main_rx.pop_front();
       m.id=f.id; m.len=f.len; for(int i=0;i<8;i++) m.data[i]=f.data[i]; return true; }

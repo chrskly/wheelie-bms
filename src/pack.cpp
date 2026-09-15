@@ -104,6 +104,8 @@ void BatteryPack::init(const BatteryPackConfig& config) {
      * the pin state, the reason mask and the weld-check timestamp cannot drift
      * apart. The mask is cleared first so the call logs and timestamps. */
     contactorInhibitReasons = 0;
+    previousErrorFlags = 0;
+    previousReceivePeak = 0;
     enable_inhibit_contactor_close(CI_STARTUP);
 
     // Set up contactor feedback
@@ -302,6 +304,64 @@ void BatteryPack::request_data() {
  */
 void BatteryPack::poll_can() {
     CAN->poll();
+}
+
+/*
+ * Account for what the pack's CAN controller reports about its own health.
+ *
+ * The main bus has done this since B157 -- it counts receive-FIFO overflows and
+ * recovers from bus-off. The pack controllers had nothing equivalent, so a pack
+ * bus losing every frame to a receive overflow, or off the bus entirely, was
+ * invisible: the per-pack counters in 0x357 only ever counted module ids that
+ * failed to parse. The eventual symptom was the modules ageing out into a
+ * critical fault with nothing to say why.
+ *
+ * TWO SIGNALS, because neither alone is enough.
+ *
+ * EFLG is the controller's own view. Its bits are LATCHED, and ACAN2515 keeps
+ * bitModify2515Register() private and never clears them itself, so once
+ * RX0OVR or RX1OVR sets it stays set for the life of the program. That makes
+ * this a one-shot indication and not a count, however it is written -- so it is
+ * treated as one deliberately: the first overflow is counted and reported, and
+ * after that the flag says only "this has happened at least once".
+ *
+ * The driver's own receive buffer is the second signal, and unlike EFLG it
+ * tracks severity: peak count reaching the buffer size means frames were
+ * dropped in software, between one 5 ms drain and the next. That is the failure
+ * this pack bus is actually prone to, since a poll of six modules bursts far
+ * more frames than fit between service ticks, and it is why read_message()
+ * drains READ_FRAMES_PER_CYCLE at a time rather than one.
+ */
+void BatteryPack::check_can_health() {
+    const uint8_t flags = CAN->errorFlagRegister();
+    const uint8_t newFlags = (uint8_t)( flags & ~previousErrorFlags );
+    previousErrorFlags = flags;
+
+    if ( newFlags & 0xC0 ) {            // RX1OVR | RX0OVR
+        increment_can_rx_error_count();
+        printf("[pack%d][can] controller receive overflow, frames lost (EFLG 0x%02X). "
+               "This bit latches and cannot be cleared through the driver, so it "
+               "will not be reported again.\n", id, flags);
+    }
+    if ( newFlags & 0x20 ) {            // TXBO
+        printf("[pack%d][can] bus-off\n", id);
+    }
+    if ( newFlags & 0x18 ) {            // TXEP | RXEP
+        printf("[pack%d][can] error-passive (EFLG 0x%02X)\n", id, flags);
+    }
+
+    /* Software-side drops. The peak is a high-water mark the driver only ever
+     * raises, so compare against the last one seen rather than re-reporting. */
+    const uint16_t peak = CAN->receiveBufferPeakCount();
+    if ( peak > previousReceivePeak ) {
+        previousReceivePeak = peak;
+        if ( peak >= CAN->receiveBufferSize() ) {
+            increment_can_rx_error_count();
+            printf("[pack%d][can] driver receive buffer reached its limit (%u of %u); "
+                   "module replies were dropped between drains\n",
+                   id, (unsigned int)peak, (unsigned int)CAN->receiveBufferSize());
+        }
+    }
 }
 
 /*
@@ -873,25 +933,187 @@ bool BatteryPack::contactors_are_welded() {
 
 // Current
 
-int16_t BatteryPack::get_max_discharge_current() {
-    return 0;
+
+/*==============================================================================
+ * Charge current by temperature
+ *
+ * Indexed by (temperature + 10), covering -10C to +39C. Below -10C the pack is
+ * heated instead of charged; at +40C and above there is no charging at all.
+ *
+ * Written as C-rates rather than amperes. The values are the same policy the
+ * table always encoded -- plating-limited at the cold end, a ramp, a plateau,
+ * and a step down as the pack approaches its temperature ceiling -- but tied to
+ * BATTERY_CAPACITY_AS_PER_PACK so the curve and the cells cannot drift apart.
+ * They had: the plateau sat at 125 A, which on a 26 Ah pack is 4.8C.
+ *
+ * The cold end below is unchanged in amperes (3 A at -10C is 0.115C, which is
+ * about where the published guidance for charging NMC/graphite at -10C sits).
+ * Everything from 0C up is rescaled to the CHARGE_C_RATE_PERCENT envelope, which
+ * also removes a cliff the old table had at 0C, where it stepped 6 A -> 13 A.
+ *
+ * Lives here rather than in the class: it is one shared constant, not per-pack
+ * state, and at namespace scope the invariants below can actually be checked.
+ *============================================================================*/
+
+namespace {
+
+/*
+ * The table is the lower of two separate limits at every temperature.
+ *
+ *   1. CHARGE_ACCEPTANCE_PERCENT_OF_C -- what the chemistry will take, as an
+ *      absolute fraction of 1C. Plating-limited at the cold end, a ramp to 1C
+ *      at 15C, a second ramp to the 2.2C ceiling at 25C, then backing off as
+ *      the pack nears its temperature ceiling.
+ *      This does NOT follow CHARGE_C_RATE_PERCENT: the plating limit at -10C
+ *      does not move because a higher sustained rate was configured. Raising
+ *      the knob to 2.2C bought nothing below 15C and only part of it between
+ *      15C and 25C, which is the intended behaviour -- a cold cell does not
+ *      accept a regen burst just because a warm one does.
+ *
+ *   2. CHARGE_CURRENT_MAX_PER_PACK_A shaped by the same curve -- the policy
+ *      limit, which does follow the knob, so turning it down pulls the whole
+ *      warm half down with it instead of leaving the ramp stranded above the
+ *      plateau.
+ *
+ * Taking the lower of the two composes correctly at any setting, and is the
+ * reason 0.5C does not produce a curve that dips in the middle.
+ */
+constexpr int CHARGE_ACCEPTANCE_PERCENT_OF_C[] = {
+    // -10C to -1C : plating-limited, ~0.12C rising to ~0.23C
+    12, 12, 12, 15, 15, 15, 19, 19, 23, 23,
+    //   0C to 15C : ramp up as the cell warms
+    27, 32, 37, 42, 46, 51, 56, 61, 66, 71, 76, 80, 85, 90, 95, 100,
+    //  16C to 24C : second ramp, 1C at 15C to the 2.2C ceiling at 25C
+    112, 124, 136, 148, 160, 172, 184, 196, 208,
+    //  25C to 35C : full acceptance
+    220, 220, 220, 220, 220, 220, 220, 220, 220, 220, 220,
+    //  36C to 39C : backing off ahead of MAXIMUM_TEMPERATURE
+    40, 40, 40, 40,
+};
+
+constexpr int CHARGE_TABLE_ENTRIES =
+    (int)( sizeof(CHARGE_ACCEPTANCE_PERCENT_OF_C) / sizeof(CHARGE_ACCEPTANCE_PERCENT_OF_C[0]) );
+
+/* uint16_t, not uint8_t. These are amperes derived from PACK_CAPACITY_AH, and a
+ * uint8_t overflows at the 2.2C ceiling above about 116 Ah: a 117 Ah pack
+ * computes 257 A and stores 1.
+ *
+ * That was never a silent wrong answer -- the static_asserts below caught it and
+ * the build failed -- but they caught it by the wrong end. A 117 Ah pack was
+ * rejected with "CHARGE_C_RATE_PERCENT is above the charge acceptance curve's
+ * own ceiling", sending whoever hit it to re-read a datasheet about a C-rate
+ * that was perfectly reasonable, when the actual problem was the width of a
+ * type three functions away. Widening it lets the configuration simply work. */
+constexpr uint16_t c_rate(int percentOfC) {
+    return (uint16_t)( ( (long)PACK_CAPACITY_AH * percentOfC + 50 ) / 100 );
 }
 
-/* chargeCurrentMax[] is indexed by (temperature + 10) and covers -10C to +39C
- * only. Return 0 (no charging) outside that window, which also covers the
+// Amperes at a fraction of the configured sustained rate, rounded to nearest.
+constexpr uint16_t policy_rate(int percentOfPlateau) {
+    return (uint16_t)( ( (long)CHARGE_CURRENT_MAX_PER_PACK_A * percentOfPlateau + 50 ) / 100 );
+}
+
+constexpr uint16_t charge_amps_at(int index) {
+    return ( c_rate(CHARGE_ACCEPTANCE_PERCENT_OF_C[index])
+             < policy_rate(CHARGE_ACCEPTANCE_PERCENT_OF_C[index]) )
+        ? c_rate(CHARGE_ACCEPTANCE_PERCENT_OF_C[index])
+        : policy_rate(CHARGE_ACCEPTANCE_PERCENT_OF_C[index]);
+}
+
+constexpr uint16_t table_peak(int i = 0, uint16_t best = 0) {
+    return ( i >= CHARGE_TABLE_ENTRIES )
+        ? best
+        : table_peak(i + 1, charge_amps_at(i) > best ? charge_amps_at(i) : best);
+}
+
+/* The highest acceptance the curve itself claims, in percent of 1C, ignoring
+ * the policy knob entirely. This is the ceiling CHARGE_C_RATE_PERCENT cannot
+ * usefully be raised past, and it moves only when someone edits the curve. */
+constexpr int acceptance_ceiling(int i = 0, int best = 0) {
+    return ( i >= CHARGE_TABLE_ENTRIES )
+        ? best
+        : acceptance_ceiling(i + 1,
+              CHARGE_ACCEPTANCE_PERCENT_OF_C[i] > best
+                  ? CHARGE_ACCEPTANCE_PERCENT_OF_C[i] : best);
+}
+
+/* Rises (or holds), then falls (or holds), and never rises again. Equal
+ * neighbours are fine in either phase; what is banned is a dip in the middle. */
+constexpr bool rises_then_falls(int i = 1, bool falling = false) {
+    return ( i >= CHARGE_TABLE_ENTRIES )
+        ? true
+        : ( charge_amps_at(i) < charge_amps_at(i - 1) )
+            ? rises_then_falls(i + 1, true)
+            : ( falling && charge_amps_at(i) > charge_amps_at(i - 1) )
+                ? false
+                : rises_then_falls(i + 1, falling);
+}
+
+static_assert(CHARGE_TABLE_ENTRIES == ( 39 - (-10) + 1 ),
+    "the acceptance curve must have exactly one entry per whole degree from -10C to +39C");
+static_assert(table_peak() > 0,
+    "CHARGE_C_RATE_PERCENT rounds every table entry to zero amps");
+/* Guards the widening above: if a future pack is large enough that the derived
+ * amperes no longer fit the type, this fires rather than wrapping silently. */
+static_assert(( (long)PACK_CAPACITY_AH * acceptance_ceiling() + 50 ) / 100 <= 0xFFFF,
+    "the charge acceptance curve derives an ampere figure too large for uint16_t; "
+    "widen c_rate()/policy_rate() and charge_current_for_temperature()");
+static_assert(table_peak() <= CHARGE_CURRENT_MAX_PER_PACK_A,
+    "a table entry exceeds the configured sustained charge rate");
+/* Going past the curve is not a dial you turn; it is a claim about the cells
+ * that has to be made in CHARGE_ACCEPTANCE_PERCENT_OF_C, with a source in hand.
+ * The curve now peaks at 2.2C, which is the donor vehicle's 20 kW recuperation
+ * figure on a 26 Ah pack -- a burst rating standing in for a sustained one,
+ * because 0x351 has only one field. See the REGEN note in settings.h. */
+static_assert(CHARGE_CURRENT_MAX_PER_PACK_A <= c_rate(acceptance_ceiling()),
+    "CHARGE_C_RATE_PERCENT is above the charge acceptance curve's own ceiling, so "
+    "raising it further does nothing. To charge faster than the curve allows, raise "
+    "CHARGE_ACCEPTANCE_PERCENT_OF_C against the cell datasheet.");
+/* charge_current_for_temperature_range() takes the lower of the two end
+ * temperatures and relies on that being the minimum across every module in
+ * between. That holds only while the curve has no interior dip. */
+static_assert(rises_then_falls(),
+    "the charge current table must be unimodal: non-decreasing to the plateau, "
+    "then non-increasing. charge_current_for_temperature_range() would step over "
+    "a dip in the middle.");
+
+}  // namespace
+
+/* Returns 0 (no charging) outside the table's window, which also covers the
  * -126 / 126 sentinels the temperature getters return before any module data
- * has arrived. The three call sites below used to index the array directly
- * with no range check at all. */
+ * has arrived. The call sites below used to index the array directly with no
+ * range check at all. */
 uint16_t BatteryPack::charge_current_for_temperature(int8_t temperature) {
     const int index = (int)temperature + 10;
-    const int entries = (int)(sizeof(chargeCurrentMax) / sizeof(chargeCurrentMax[0]));
-    if ( index < 0 || index >= entries ) {
+    if ( index < 0 || index >= CHARGE_TABLE_ENTRIES ) {
         return 0;
     }
-    return (uint16_t)chargeCurrentMax[index];
+    return (uint16_t)charge_amps_at(index);
 }
 
 /* Returns the maximum charge current as a function of pack temperature. */
+/*
+ * Charge current the pack can accept, given the spread between its coldest and
+ * hottest sensor.
+ *
+ * Both ends matter, and they are limited by different mechanisms. The cold end
+ * is lithium plating: as the graphite anode's intercalation kinetics slow,
+ * current pushed into a cold cell deposits as metallic lithium instead of
+ * intercalating, which is irreversible capacity loss and a dendrite risk. The
+ * hot end is thermal stress and calendar ageing. A pack is never at one
+ * temperature -- a few degrees of internal gradient is normal, and much larger
+ * ones are documented -- so no single reading can stand in for the whole thing.
+ *
+ * Taking the lower of the two endpoint lookups is the minimum over EVERY module
+ * in the pack, not merely over the two extremes, because the table is unimodal
+ * -- a static_assert above enforces that.
+ */
+uint16_t BatteryPack::charge_current_for_temperature_range(int8_t coldest, int8_t hottest) {
+    const uint16_t coldLimit = charge_current_for_temperature(coldest);
+    const uint16_t hotLimit = charge_current_for_temperature(hottest);
+    return ( coldLimit < hotLimit ) ? coldLimit : hotLimit;
+}
+
 uint16_t BatteryPack::get_max_charge_current_by_temperature() {
     // Safety checks first
     if ( has_full_cell() ) {
@@ -900,39 +1122,43 @@ uint16_t BatteryPack::get_max_charge_current_by_temperature() {
     if ( has_temperature_sensor_over_max() ) {
         return 0;
     }
-    if ( get_lowest_temperature() < CHARGE_TEMPERATURE_MINIMUM) {
+    if ( get_lowest_temperature() < CHARGE_TEMPERATURE_MINIMUM ) {
         return 0;
     }
 
-    /* Allow predefined max current when the temperature is below
-     * CHARGE_TEMPERATURE_DERATING_MINIMUM (15°C) */
+    /* Keyed on BOTH ends of the pack's spread.
+     *
+     * This used to look up get_highest_temperature() alone, which is correct at
+     * the hot end and wrong at the cold end, and did not fail safe: modules at
+     * -8C and +14C in the same pack clear the CHARGE_TEMPERATURE_MINIMUM guard
+     * above (it tests the coldest) and were then handed the +14C table entry --
+     * 111 A into a module entitled to 4 A. */
+    const uint16_t currentLimit = charge_current_for_temperature_range(
+        get_lowest_temperature(), get_highest_temperature());
+
+    /* The rate-of-rise derate only engages once something in the pack is above
+     * CHARGE_TEMPERATURE_DERATING_MINIMUM (15C). Deliberately still keyed on the
+     * HOTTEST sensor: it is a thermal guard, so it should engage as soon as any
+     * part of the pack is warm enough for self-heating to matter rather than
+     * waiting for the coldest module to catch up. */
     if ( get_highest_temperature() < CHARGE_TEMPERATURE_DERATING_MINIMUM ) {
-        return charge_current_for_temperature(get_highest_temperature());
+        return currentLimit;
     }
 
-    /* When battery temp is over CHARGE_TEMPERATURE_DERATING_MINIMUM (15°C), 
-     * allow CHARGE_TEMPERATURE_DERATING_THRESHOLD (1°) of temperature increase
-     * per minute. Scale back charge current by 10% for every degree over that.*/
-    else {
-        if ( temperatureDelta < CHARGE_TEMPERATURE_DERATING_THRESHOLD ) {
-            return charge_current_for_temperature(get_highest_temperature());
-        } else {
-            const int degreesOverThreshold = temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD;
-            if ( degreesOverThreshold >= 10 ) {
-                return 0;
-            } else {
-                /* Scale back 10% per degree over the threshold, per the comment
-                 * above. The old expression was
-                 *   (10 - temperatureDelta - THRESHOLD) / 100
-                 * which is integer division by 100 and so evaluated to 0 for
-                 * every reachable input -- the derated charge current was
-                 * always zero. It also had the wrong shape: the intent is
-                 * 1 - 0.1*excess, not (10 - excess)/100. */
-                const float derateScaleFactor = 1.0f - ( 0.1f * (float)degreesOverThreshold );
-                return (uint16_t)( charge_current_for_temperature(get_highest_temperature()) * derateScaleFactor );
-            }
-        }
+    /* Above that, allow CHARGE_TEMPERATURE_DERATING_THRESHOLD (1C) of rise per
+     * minute, and scale back 10% for every further degree per minute. */
+    if ( temperatureDelta < CHARGE_TEMPERATURE_DERATING_THRESHOLD ) {
+        return currentLimit;
     }
-
-    return 0;
+    const int degreesOverThreshold = temperatureDelta - CHARGE_TEMPERATURE_DERATING_THRESHOLD;
+    if ( degreesOverThreshold >= 10 ) {
+        return 0;
+    }
+    /* The old expression was
+     *   (10 - temperatureDelta - THRESHOLD) / 100
+     * which is integer division by 100 and so evaluated to 0 for every reachable
+     * input -- the derated charge current was always zero. It also had the wrong
+     * shape: the intent is 1 - 0.1*excess, not (10 - excess)/100. */
+    const float derateScaleFactor = 1.0f - ( 0.1f * (float)degreesOverThreshold );
+    return (uint16_t)( (float)currentLimit * derateScaleFactor );
 }

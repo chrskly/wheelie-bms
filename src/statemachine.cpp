@@ -434,6 +434,14 @@ void state_batteryHeating(Event event) {
             bms.set_state(&state_standby, "charging terminated");
             break;
         case E_MODULE_UNRESPONSIVE:
+            /* Stop heating BEFORE leaving. Every other exit from this state
+             * disables the heater explicitly; these two fault exits did not,
+             * and relied on state_criticalFault's safety block to do it on the
+             * next event dispatch. That is the wrong way round: losing the
+             * modules means losing the temperature feedback, so this is the
+             * moment least safe to still be putting heat into the pack -- the
+             * same reason heatingBlind above refuses to heat on stale data. */
+            bms.disable_heater();
             bms.enable_charge_inhibit("[H08] dead module", R_MODULE_UNRESPONSIVE);
             bms.enable_drive_inhibit("[H09] dead module", R_MODULE_UNRESPONSIVE);
             bms.set_state(&state_criticalFault, "dead module");
@@ -441,6 +449,8 @@ void state_batteryHeating(Event event) {
         case E_MODULES_ALL_RESPONSIVE:
             break;  // Valid event, but we don't need to do anything with it.
         case E_SHUNT_UNRESPONSIVE:
+            // See the dead-module case above.
+            bms.disable_heater();
             bms.enable_charge_inhibit("[H10] dead shunt", R_SHUNT_UNRESPONSIVE);
             bms.enable_drive_inhibit("[H11] dead shunt", R_SHUNT_UNRESPONSIVE);
             bms.set_state(&state_criticalFault, "dead shunt");

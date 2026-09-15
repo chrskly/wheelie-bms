@@ -3,7 +3,7 @@
 void test_util(); void test_module(); void test_shunt(); void test_led();
 void test_pack(); void test_battery(); void test_io(); void test_bms();
 void test_statemachine(); void test_integration(); void test_edge(); void test_webstatus();
-void test_deep(); void test_matrix(); void test_final();
+void test_deep(); void test_matrix(); void test_final(); void test_fuzz(); void test_wire(); void test_balance(); void test_guards(); void test_curve();
 
 /* Must run before anything publishes a snapshot: the store is a file-static and
  * the "nothing published yet" branch is only reachable once per process. */
@@ -20,6 +20,6 @@ int main() {
     test_util(); test_module(); test_shunt(); test_led();
     test_pack(); test_battery(); test_io(); test_bms();
     test_statemachine(); test_integration(); test_edge(); test_webstatus();
-    test_deep(); test_matrix(); test_final();
+    test_deep(); test_matrix(); test_final(); test_fuzz(); test_wire(); test_balance(); test_guards(); test_curve();
     return unit_summary();
 }

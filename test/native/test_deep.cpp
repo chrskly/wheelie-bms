@@ -239,6 +239,34 @@ void test_deep() {
         check_eq("one byte short is refused", (long)webstatus_render_json(w, tiny, full + 1), 0);
         check_eq("and refusal leaves an empty string, never a half object", (long)strlen(tiny), 0);
         check_eq("two bytes short is refused", (long)webstatus_render_json(w, tiny, full), 0);
+
+        /* Sweep every buffer size across the whole range. At each one the
+         * writer must either refuse outright and leave an empty string, or
+         * produce a NUL-terminated, structurally balanced object -- never a
+         * truncated fragment. This is what pins the `>=` in JsonWriter::fmt():
+         * with a strict `>` a formatted field that exactly consumed the
+         * remaining space would be accepted with its terminator cut off. */
+        long refused = 0, produced = 0, malformed = 0, unterminated = 0;
+        for (size_t cap = 1; cap <= full + 3; cap++) {
+            memset(tiny, 0x7F, sizeof tiny);
+            const size_t n = webstatus_render_json(w, tiny, cap);
+            if (n == 0) {
+                refused++;
+                if (tiny[0] != '\0') unterminated++;
+                continue;
+            }
+            produced++;
+            if (n >= cap || tiny[n] != '\0') { unterminated++; continue; }
+            int depth = 0; bool bad = false;
+            for (size_t i = 0; i < n; i++) {
+                if (tiny[i] == '{' || tiny[i] == '[') depth++;
+                else if (tiny[i] == '}' || tiny[i] == ']') { depth--; if (depth < 0) { bad = true; break; } }
+            }
+            if (bad || depth != 0) malformed++;
+        }
+        check("the sweep covered both outcomes", refused > 0 && produced > 0);
+        check_eq("every result is NUL-terminated within its buffer", unterminated, 0);
+        check_eq("every produced object is structurally balanced", malformed, 0);
         check_eq("a null buffer is refused", (long)webstatus_render_json(w, nullptr, 100), 0);
         check_eq("a zero-length buffer is refused without touching it",
                  (long)webstatus_render_json(w, tiny, 0), 0);

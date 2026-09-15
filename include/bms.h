@@ -38,6 +38,7 @@ enum InternalErrorSource {
     IE_HIGH_CELL_RANGE = 1 << 1,   // highest cell voltage outside the plausible range
     IE_LOW_TEMP_RANGE  = 1 << 2,   // lowest sensor temperature outside the plausible range
     IE_HIGH_TEMP_RANGE = 1 << 3,   // highest sensor temperature outside the plausible range
+    IE_SHUNT_IMPLAUSIBLE = 1 << 6, // shunt readings contradict each other or the BMS state
 };
 
 /* Values are also used as bit positions in the inhibit reason masks, so they
@@ -79,6 +80,7 @@ class Bms {
         uint8_t internalErrorFlags = 0;        // bitmask of InternalErrorSource
         bool watchdogReboot = false;           //
         uint64_t lastTimePackVoltagesMatched = 0;  // get_clock_ms() when pack voltages last matched
+        uint64_t shuntImplausibleSince = 0;    // get_clock_ms(), for the shunt cross-check
         uint64_t stateEnteredAt = 0;           // get_clock_ms() when the current state was entered
         uint64_t hvContactorsShouldBeOpenSince = 0;   // get_clock_ms(), for weld-check settling
         struct CANMessage canFrame;            //
@@ -167,10 +169,17 @@ class Bms {
         bool has_internal_error(InternalErrorSource source) { return ( internalErrorFlags & (uint8_t)source ) != 0; }
         uint8_t get_internal_error_flags() { return internalErrorFlags; }
 
+        /* Byte 1 of 0x352. NOTE: data/app.js ERROR_BITS decodes this by bit
+         * position, so a bit added here must be added there too -- a missing
+         * name is not an error, the page just silently stops showing it. */
         uint8_t get_error_byte();
         uint8_t get_status_byte();
 
-        bool regen_not_allowed() { return soc > 90; };
+        bool regen_not_allowed() { return soc > REGEN_BLOCK_SOC; };
+
+        /* Diagnostic only -- never gates a contactor or a limit. See the note
+         * on the definition. */
+        void check_shunt_plausibility();
 
         void increment_invalid_event_count();
         uint16_t get_invalid_event_count() { return invalidEventCounter; };

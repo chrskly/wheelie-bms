@@ -45,12 +45,13 @@ var INTERNAL_ERRORS = [
     'Lowest temperature out of range',
     'Highest temperature out of range',
     'Heater ineffective',
-    'Temperature data stale'
+    'Temperature data stale',
+    'Shunt readings implausible'           // IE_SHUNT_IMPLAUSIBLE, bit 6
 ];
 
 // Bit layout of Bms::get_error_byte() / get_status_byte() / get_welding_byte()
 var ERROR_BITS   = ['Internal error', 'Packs imbalanced', 'Shunt dead',
-                    'Illegal transition', 'Battery not alive'];
+                    'Illegal transition', 'Battery not alive', 'Dead cell'];
 var STATUS_BITS  = ['Charge inhibited', 'Drive inhibited', 'Heater on',
                     'Ignition on', 'Charge enabled', 'Regen not allowed'];
 var WELDING_BITS = ['Positive contactor', 'Negative contactor',
@@ -550,7 +551,8 @@ function renderSystem(data) {
         ['Delta warn / alarm', cfg.deltaWarn + ' / ' + cfg.deltaAlarm + ' mV'],
         ['Temp warn / max', cfg.tempWarn + ' / ' + cfg.tempMaxLimit + ' \u00b0C'],
         ['Min charge temp', cfg.tempChargeMin + ' \u00b0C'],
-        ['Capacity', (cfg.capacityWh / 1000).toFixed(1) + ' kWh']
+        ['Capacity', (cfg.capacityWh / 1000).toFixed(1) + ' kWh'],
+        ['Firmware', cfg.version]
     ]);
 }
 

@@ -85,7 +85,8 @@ void setup() {
      * bring it up explicitly so the rate is ours rather than inherited. */
     Serial.begin(CONSOLE_BAUD_RATE);
     delay(50);
-    printf("BMS starting up ...\n");
+    printf("BMS starting up ... (firmware %s, %s pack%s)\n",
+           VERSION_STRING, NUM_PACKS == 1 ? "1" : "2", NUM_PACKS == 1 ? "" : "s");
 
     // Check for unexpected reboot
     const esp_reset_reason_t resetReason = esp_reset_reason();

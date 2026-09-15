@@ -35,8 +35,14 @@ void test_integration() {
     check_eq("pack voltage 355.20 V", (long)u16(f,0), 35520);
     check_eq("temperature 25.0 C", (long)i16(f,4), 250);
     check_eq("0x351 present", sim_last_frame(0x351, f), 1);
-    check_eq("charge voltage limit 384.0 V", (long)u16(f,0), 3840);
-    check_eq("discharge voltage limit 278.4 V", (long)u16(f,6), 2784);
+    /* Derived rather than written out: these are the cell window scaled to the
+     * whole pack in 0.1 V units, and hardcoding them meant moving
+     * CELL_FULL_VOLTAGE / CELL_EMPTY_VOLTAGE broke a test that was not about
+     * the window at all. */
+    check_eq("charge voltage limit is the full pack at CELL_FULL_VOLTAGE", (long)u16(f,0),
+             (long)CELL_FULL_VOLTAGE * CELLS_PER_MODULE * MODULES_PER_PACK / 100);
+    check_eq("discharge voltage limit is the full pack at CELL_EMPTY_VOLTAGE", (long)u16(f,6),
+             (long)CELL_EMPTY_VOLTAGE * CELLS_PER_MODULE * MODULES_PER_PACK / 100);
     check("discharge current advertised", u16(f,4) > 0);
     check_eq("0x355 present", sim_last_frame(0x355, f), 1);
     check_eq("SoC 100", (long)u16(f,0), 100);

@@ -33,6 +33,14 @@ static void feed(BatteryPack& p, uint16_t mv, int8_t degC, int tempsFitted = 2) 
     p.process_voltage_update();
 }
 
+/* Overwrite one module's temperature slots, so a pack can be given a genuine
+ * spread between its coldest and hottest sensor rather than one flat value. */
+static void set_module_temperature(BatteryPack& p, int module, int8_t degC, int tempsFitted = 2) {
+    CANMessage t; t.id = 0x180 | module; t.len = 8;
+    for (int i=0;i<TEMPS_PER_MODULE;i++) t.data[i] = (i<tempsFitted)?(uint8_t)(degC+40):0;
+    p.decode_temperatures(&t);
+}
+
 void test_pack() {
     sim_reset();
     suite("pack: init");
@@ -87,8 +95,8 @@ void test_pack() {
     suite("pack: charge current by temperature");
     check_eq("below the table: no charge", (long)p.charge_current_for_temperature(-11), 0);
     check_eq("first table entry", (long)p.charge_current_for_temperature(-10), 3);
-    check_eq("mid table", (long)p.charge_current_for_temperature(0), 13);
-    check_eq("last table entry", (long)p.charge_current_for_temperature(39), 50);
+    check_eq("mid table", (long)p.charge_current_for_temperature(0), 7);
+    check_eq("last table entry", (long)p.charge_current_for_temperature(39), 10);
     check_eq("above the table: no charge", (long)p.charge_current_for_temperature(40), 0);
     check_eq("no-data sentinel low", (long)p.charge_current_for_temperature(-126), 0);
     check_eq("no-data sentinel high", (long)p.charge_current_for_temperature(126), 0);
@@ -99,7 +107,63 @@ void test_pack() {
     check_eq("over-max temperature: no charge", (long)p.get_max_charge_current_by_temperature(), 0);
     p.init(cfg(0)); p.set_battery(&battery); feed(p, 3700, CHARGE_TEMPERATURE_MINIMUM - 5);
     check_eq("too cold: no charge", (long)p.get_max_charge_current_by_temperature(), 0);
-    check_eq("discharge stub", (long)p.get_max_discharge_current(), 0);
+
+    /* The table used to plateau at a flat 125 A, which on a 26 Ah pack is 4.8C
+     * -- above what NMC/graphite accepts, and above the discharge limit, which
+     * is backwards. It is now derived from CHARGE_C_RATE_PERCENT so it cannot
+     * drift from the cells again. */
+    suite("pack: charge current stays inside the C-rate envelope");
+    check_eq("the plateau is CHARGE_C_RATE_PERCENT of 1C",
+             (long)p.charge_current_for_temperature(25),
+             (long)( ( PACK_CAPACITY_AH * CHARGE_C_RATE_PERCENT ) / 100 ));
+    check("charging never exceeds the discharge rating",
+          CHARGE_CURRENT_MAX_PER_PACK_A <= DISCHARGE_CURRENT_MAX_PER_PACK_A);
+    for (int t = -10; t <= 39; t++) {
+        if (p.charge_current_for_temperature((int8_t)t) > CHARGE_CURRENT_MAX_PER_PACK_A) {
+            check("no table entry exceeds the plateau", false);
+            break;
+        }
+    }
+    check("no table entry exceeds the plateau", true);
+    /* The old table stepped 6 A -> 13 A across freezing, more than doubling the
+     * current for one degree at the temperature where plating risk is highest. */
+    check("no cliff across 0C",
+          p.charge_current_for_temperature(0) - p.charge_current_for_temperature(-1) <= 2);
+    check_eq("still ~0.1C at the cold limit, per the published guidance",
+             (long)p.charge_current_for_temperature(-10),
+             (long)( ( PACK_CAPACITY_AH * 12 + 50 ) / 100 ));
+
+    /* The cold end of the table is plating-limited and the hot end is
+     * thermally limited, so the limit has to be the lower of the two ends. This
+     * used to key the lookup on the hottest sensor alone, which let a pack
+     * spanning -8C to +14C clear the too-cold guard (it tests the coldest) and
+     * then take the +14C entry, 111 A, into a module entitled to 3 A. */
+    suite("pack: charge current keys on both ends of the temperature spread");
+    check_eq("the cold end wins", (long)p.charge_current_for_temperature_range(-8, 14), 3);
+    check_eq("the hot end wins", (long)p.charge_current_for_temperature_range(20, 38), 10);
+    check_eq("argument order does not matter",
+             (long)p.charge_current_for_temperature_range(14, -8), 3);
+    check_eq("a flat pack is just the table",
+             (long)p.charge_current_for_temperature_range(25, 25),
+             (long)CHARGE_CURRENT_MAX_PER_PACK_A);
+    check_eq("either end off the table means no charge",
+             (long)p.charge_current_for_temperature_range(-8, 45), 0);
+    check_eq("no-data sentinels (lowest 126, highest -126) mean no charge",
+             (long)p.charge_current_for_temperature_range(126, -126), 0);
+
+    p.init(cfg(0)); p.set_battery(&battery);
+    feed(p, 3700, 14); set_module_temperature(p, 0, -8);
+    check_eq("the spread is set up as intended", p.get_lowest_temperature(), -8);
+    check_eq("...at both ends", p.get_highest_temperature(), 14);
+    check_eq("the coldest module governs, not the hottest",
+             (long)p.get_max_charge_current_by_temperature(),
+             (long)p.charge_current_for_temperature(-8));
+
+    p.init(cfg(0)); p.set_battery(&battery);
+    feed(p, 3700, 20); set_module_temperature(p, 0, 38);
+    check_eq("and the hottest still governs at the top of the range",
+             (long)p.get_max_charge_current_by_temperature(),
+             (long)p.charge_current_for_temperature(38));
 
     suite("pack: contactor reason mask");
     p.init(cfg(0)); p.set_battery(&battery);

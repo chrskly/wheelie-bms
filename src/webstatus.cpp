@@ -336,6 +336,7 @@ size_t webstatus_render_json(const WebSnapshot& snapshot, char* buf, size_t bufL
     out.key_i32("tempChargeMin", CHARGE_TEMPERATURE_MINIMUM);
     out.key_i32("noTemp", NO_TEMPERATURE_READING);
     out.key_u32("capacityWh", BATTERY_CAPACITY_WH);
+    out.key_str("version", VERSION_STRING);
     out.close_object();
 
     out.open_array("packs");

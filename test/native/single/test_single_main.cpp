@@ -23,6 +23,8 @@ static void boot() {
     sim_run_ms(3000);
 }
 
+void test_fuzz();     // the same adversarial suite, against a one-pack battery
+
 int main() {
     static_assert(NUM_PACKS == 1, "this binary must be built with -DNUM_PACKS_CFG=1");
 
@@ -87,6 +89,25 @@ int main() {
     check_eq("clears when the feedback opens", bms.get_welding_byte(), 0x00);
     battery.disable_inhibit_contactor_close();
 
+    suite("single-pack: the per-pack CAN counter frame covers only real packs");
+    {
+        /* 0x357 carries two pairs of counters. Pack 1's pair used to be read
+         * unconditionally, one past the end of Battery::packs[]. Neither ASan
+         * nor UBSan catches that -- the index arrives as a runtime parameter
+         * into a fixed member array -- so it needs an explicit test. */
+        boot();
+        sim_main_tx.clear();
+        sim_run_ms(1500);
+        SimFrame f;
+        check_eq("a 0x357 was sent", sim_last_frame(0x357, f), 1);
+        check_eq("the absent pack's counters are zero",
+                 (long)(f.data[4] | (f.data[5] << 8) | (f.data[6] << 8)), 0);
+        check_eq("an out-of-range pack id reads zero, not adjacent memory",
+                 battery.get_can_rx_error_count_for_pack(1), 0);
+        check_eq("and reports no weld for a pack that does not exist",
+                 battery.contactor_is_welded(1), 0);
+    }
+
     suite("single-pack: normal operation still works");
     boot();
     sim_gpio[IGNITION_ENABLE_PIN] = 1;
@@ -101,6 +122,10 @@ int main() {
     sim_gpio[CHARGE_ENABLE_PIN] = 0;
     sim_run_ms(1000);
     check("charge off -> standby", bms.get_state() == &state_standby);
+
+    /* The invariants are configuration-independent, so run the whole
+     * adversarial suite here too: the single-pack paths have never seen it. */
+    test_fuzz();
 
     return unit_summary();
 }

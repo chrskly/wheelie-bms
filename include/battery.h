@@ -44,8 +44,14 @@ class Battery {
       /* Whole degrees C. These held int8_t values in floats, so the getters
        * performed a float -> int8_t conversion that is undefined if the value
        * ever falls outside int8_t range. */
-      int8_t lowestSensorTemperature = 0;
-      int8_t highestSensorTemperature = 0;
+      /* Start at the SENTINELS, not at 0. These are only refreshed when a
+       * temperature frame arrives, so before the first one they keep whatever
+       * they were initialised to -- and 0 is a perfectly plausible temperature,
+       * which the BMS then reported on 0x356 and on the web page as a real
+       * reading. The sentinels sit at opposite ends so the min/max searches
+       * work: lowest starts high, highest starts low. */
+      int8_t lowestSensorTemperature = 126;
+      int8_t highestSensorTemperature = -126;
       /* Latched threshold results, updated in process_temperature_update().
        * too_hot() / too_cold_to_charge() just read these, so they stay pure
        * getters and every caller in a given cycle sees the same answer. */
@@ -70,10 +76,18 @@ class Battery {
 
       void request_data();
       void read_message();
+      void check_pack_can_health();
       bool has_multiple_packs();
       uint8_t number_of_active_packs();
-      uint16_t get_can_tx_error_count_for_pack(int packId) { return packs[packId].get_can_tx_error_count(); }
-      uint16_t get_can_rx_error_count_for_pack(int packId) { return packs[packId].get_can_rx_error_count(); }
+      /* Bounds-checked: these take a runtime index into a fixed-size member
+       * array, which neither ASan nor UBSan flags, so an out-of-range pack id
+       * read adjacent members and reported them as counters. */
+      uint16_t get_can_tx_error_count_for_pack(int packId) {
+          return ( packId >= 0 && packId < numPacks ) ? packs[packId].get_can_tx_error_count() : 0;
+      }
+      uint16_t get_can_rx_error_count_for_pack(int packId) {
+          return ( packId >= 0 && packId < numPacks ) ? packs[packId].get_can_rx_error_count() : 0;
+      }
 
       // Voltage
       uint32_t get_voltage();
@@ -103,6 +117,7 @@ class Battery {
       // Temperature
       void update_highest_sensor_temperature();
       int8_t get_highest_sensor_temperature();
+      bool have_temperature_reading();
       bool too_hot();
       void update_lowest_sensor_temperature();
       int8_t get_lowest_sensor_temperature();
